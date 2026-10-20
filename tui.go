@@ -34,7 +34,8 @@ type model struct {
 	limits           map[string]*Limits // per Claude account (accountKey): its rate limit windows, from its latest turn
 	spend            map[string]spend
 	spendAt          time.Time
-	dirty            bool // the run changed since it was last saved
+	models           map[string]modelList // per account, for the setup's model picker
+	dirty            bool                 // the run changed since it was last saved
 	savedAt          time.Time
 }
 
@@ -63,7 +64,7 @@ func runTUI(resume string) error {
 	in.Cursor.Style = sAccent
 	in.Placeholder = "message the lead…"
 	in.Focus()
-	m := &model{cfg: cfg, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{},
+	m := &model{cfg: cfg, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{}, models: map[string]modelList{},
 		lead: &agentState{name: "lead", dir: cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI)}}
 	if resume != "" {
 		r, err := loadRun(resume)
@@ -77,14 +78,29 @@ func runTUI(resume string) error {
 		m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "resumed the run from " + r.Saved.Format("Jan 02 15:04")})
 	}
 	if !saved {
-		m.setup = &setupForm{cfg: cfg}
+		m.setup = &setupForm{cfg: cfg, known: m.models}
 	}
 	prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := prog.Run()
 	return err
 }
 
-func (m *model) Init() tea.Cmd { return tea.Batch(tick(), m.refreshSpend()) }
+func (m *model) Init() tea.Cmd {
+	if m.setup != nil {
+		return tea.Batch(tick(), m.refreshSpend(), m.prefetchModels())
+	}
+	return tea.Batch(tick(), m.refreshSpend())
+}
+
+// prefetchModels loads every opencode account's models in the background, so the setup's picker is ready.
+func (m *model) prefetchModels() tea.Cmd {
+	f := m.setup
+	cmds := []tea.Cmd{f.fetch(f.cfg.lead())}
+	for _, a := range f.cfg.Agents {
+		cmds = append(cmds, f.fetch(a))
+	}
+	return tea.Batch(cmds...)
+}
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -127,6 +143,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.a.cfg.CLI == "opencode" {
 			return m, fetchSpend(msg.a.cfg)
 		}
+	case modelsMsg:
+		m.models[msg.account] = modelList{list: msg.list, err: msg.err}
 	case spendMsg:
 		if msg.ok {
 			m.spend[msg.account] = msg.s
@@ -239,8 +257,8 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "ctrl+s":
-		m.setup = &setupForm{cfg: m.cfg}
-		return m, nil
+		m.setup = &setupForm{cfg: m.cfg, known: m.models}
+		return m, m.prefetchModels()
 	case "tab":
 		m.setFocusList(!m.focusList)
 		return m, nil

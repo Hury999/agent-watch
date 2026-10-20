@@ -22,7 +22,8 @@ Go isn't on every PATH here; it may live in `/usr/local/go/bin`. Keep `go.mod`'s
 | `run.go` | `agentState.start/stop`; the request files behind `aw spawn/send/stop`; `handle` validates them |
 | `tui.go` | the model, keys, mouse, layout, views |
 | `look.go` | colors, Claude Code style transcript (`⏺`, `⎿`), markdown via glamour, spinner, `panel` |
-| `setup.go` | the setup screen (`ctrl+s`) |
+| `setup.go` | the setup screen (`ctrl+s`), with the model picker on model rows |
+| `models.go` | the picker's lists: `opencode api model.list` per account (prices, effort variants), a fixed Claude list; `matches` |
 | `usage.go` | header: Claude 5h/7d limits per account, opencode spend via `opencode stats` |
 | `persist.go` | `state.json` per run; `aw -c` / `aw -r` |
 | `lead.md` | the lead's instructions, embedded; `{{EXE}}`, `{{CWD}}`, `{{AGENTS}}` are filled in |

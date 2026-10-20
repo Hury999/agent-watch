@@ -7,12 +7,17 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 type setupForm struct {
-	cfg Config
-	row int
-	err string
+	cfg   Config
+	row   int
+	err   string
+	known map[string]modelList // models per account, shared with the model so they're fetched once
+	open  bool                 // the model picker is showing under the current model row
+	query string               // what's typed into it
+	pick  int                  // the highlighted model in it
 }
 
 var efforts = []string{"", "low", "medium", "high", "xhigh", "max"}
@@ -27,15 +32,17 @@ type field struct {
 	action  func()
 	agent   int // index of the agent this row belongs to, -1 for none
 	head    bool
+	of      func() Agent // model rows: whose models to offer
 }
 
 func (f *setupForm) fields() []field {
 	c := &f.cfg
+	lead := func() Agent { return c.lead() }
 	fs := []field{
 		{label: "cli", text: &c.Lead.CLI, choices: clis, agent: -1},
 		{label: "account", text: &c.Lead.Data, empty: "default", agent: -1},
-		{label: "model", text: &c.Lead.Model, empty: "default", agent: -1},
-		{label: "effort", text: &c.Lead.Effort, choices: efforts, agent: -1},
+		{label: "model", text: &c.Lead.Model, empty: "default", agent: -1, of: lead},
+		{label: "effort", text: &c.Lead.Effort, choices: f.effortChoices(c.lead()), agent: -1},
 	}
 	for i := range c.Agents {
 		a := &c.Agents[i]
@@ -43,8 +50,8 @@ func (f *setupForm) fields() []field {
 			field{label: "name", text: &a.Name, agent: i, head: true},
 			field{label: "cli", text: &a.CLI, choices: clis, agent: i},
 			field{label: "account", text: &a.Data, empty: "default", agent: i},
-			field{label: "model", text: &a.Model, empty: "default", agent: i},
-			field{label: "effort", text: &a.Effort, choices: efforts, agent: i},
+			field{label: "model", text: &a.Model, empty: "default", agent: i, of: func() Agent { return *a }},
+			field{label: "effort", text: &a.Effort, choices: f.effortChoices(*a), agent: i},
 			field{label: "lead may use it", toggle: &a.Enabled, agent: i})
 	}
 	return append(fs, field{label: "+ add an agent", agent: -1, action: func() {
@@ -63,6 +70,11 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cur := fs[f.row]
 	f.err = ""
 	editable := cur.text != nil && cur.choices == nil
+	if cur.of != nil {
+		if cmd, used := f.pickerKey(cur, k); used {
+			return m, cmd
+		}
+	}
 	switch k.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -130,6 +142,94 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// pickerKey handles keys on a model row. Typing searches the agent's models (the model itself only
+// changes when one is chosen); while the list is open, ↑↓ pick, enter/tab choose and esc closes it.
+// It reports whether it used the key.
+func (f *setupForm) pickerKey(cur field, k tea.KeyMsg) (tea.Cmd, bool) {
+	switch {
+	case k.Type == tea.KeyRunes || k.Type == tea.KeySpace || k.Type == tea.KeyBackspace:
+		if !f.open {
+			f.open, f.query = true, ""
+		}
+		if q := []rune(f.query); k.Type == tea.KeyBackspace && len(q) > 0 {
+			f.query = string(q[:len(q)-1])
+		} else if k.Type != tea.KeyBackspace {
+			f.query += string(k.Runes)
+		}
+		f.pick = 0
+		return f.fetch(cur.of()), true
+	case !f.open:
+		return nil, false
+	}
+	found := f.found(cur)
+	switch k.String() {
+	case "up", "shift+tab":
+		f.pick = max(f.pick-1, 0)
+	case "down":
+		f.pick = min(f.pick+1, max(len(found)-1, 0))
+	case "enter", "tab":
+		if f.pick < len(found) {
+			f.choose(cur, found[f.pick].ID)
+		} else if q := strings.TrimSpace(f.query); q != "" {
+			f.choose(cur, q) // a model that isn't listed
+		}
+		f.open = false
+	case "esc":
+		f.open = false
+	default:
+		return nil, false
+	}
+	return nil, true
+}
+
+// found is the picker's list for the search: a "default" entry, then the agent's matching models.
+func (f *setupForm) found(cur field) []modelInfo {
+	l, _ := f.listFor(cur.of())
+	return matches(append([]modelInfo{{ID: "", Price: "the CLI's default"}}, l.list...), f.query)
+}
+
+// choose sets the model, and drops an effort the new model doesn't have (the effort row is next).
+func (f *setupForm) choose(cur field, id string) {
+	*cur.text = id
+	effort := f.fields()[f.row+1]
+	if !slices.Contains(f.effortChoices(cur.of()), *effort.text) {
+		*effort.text = ""
+	}
+}
+
+// picker is the model list shown under the current model row.
+func (f *setupForm) picker(cur field, w int) []string {
+	const indent, rows = "                     ", 8
+	l, _ := f.listFor(cur.of())
+	found := f.found(cur)
+	search := indent + sAccent.Render("⌕ ") + sBold.Render(f.query) + sAccent.Render("▏")
+	switch {
+	case l.loading:
+		return []string{search + sDim.Render("  loading models…")}
+	case l.err != nil:
+		return []string{search, indent + sRed.Render(xansi.Truncate("✗ "+l.err.Error(), w-len(indent), "…"))}
+	case len(found) == 0:
+		return []string{search + sDim.Render("  no model matches · enter uses what you typed")}
+	}
+	start := min(max(f.pick-rows/2, 0), max(len(found)-rows, 0))
+	out := []string{search + sDim.Render(fmt.Sprintf("  %d · ↑↓ pick · enter choose · esc close", len(found)))}
+	for i := start; i < min(start+rows, len(found)); i++ {
+		mi := found[i]
+		id := mi.ID
+		if id == "" {
+			id = "default"
+		}
+		row := fmt.Sprintf("%-42s %-17s ", clip(id, 42), mi.Price)
+		st, mark := sDim, "  "
+		if i == f.pick {
+			st, mark = sBold, sAccent.Render("› ")
+		}
+		line := indent + mark + st.Render(row) + sDim.Render(strings.Join(mi.Variants, ","))
+		out = append(out, xansi.Truncate(line, w, "…"))
+	}
+	return out
+}
+
 func (f *setupForm) view(w, h int) string {
 	pw := min(w, 96)
 	var lines []string
@@ -177,14 +277,19 @@ func (f *setupForm) view(w, h int) string {
 		if i == f.row {
 			cursor = len(lines)
 			line = sAccent.Render("›") + label + v
-			if fl.text != nil && fl.choices == nil {
+			if fl.of != nil && !f.open {
+				line += sDim.Render("   type to search models")
+			} else if fl.text != nil && fl.choices == nil && fl.of == nil {
 				line += sAccent.Render("▏")
 			}
 			line = lipgloss.NewStyle().Background(cSelBg).Width(pw - 4).Render(line)
 		}
 		lines = append(lines, line)
+		if i == f.row && f.open && fl.of != nil {
+			lines = append(lines, f.picker(fl, pw-4)...)
+		}
 	}
-	help := []string{"", sDim.Render("empty model or account = the CLI's default · opencode models: `opencode models`"),
+	help := []string{"", sDim.Render("empty model or account = the CLI's default · type on a model row to pick from its list"),
 		sDim.Render("another account: opencode → its .db file, claude → its config dir (~/.claude-work)")}
 	room := max(h-4-len(help), 5) // panel borders, keys line and error line
 	start := min(max(cursor-room/2, 0), max(len(lines)-room, 0))

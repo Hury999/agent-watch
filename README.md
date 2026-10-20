@@ -64,7 +64,7 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 | name | what you and the lead call it, e.g. `work` |
 | cli | `claude` or `opencode` |
 | account | empty for the CLI's default login. Another opencode account: the path of its database (e.g. `~/.local/share/opencode/work.db`, run with `--standalone`). Another Claude account: its config dir (e.g. `~/.claude-work`, as `CLAUDE_CONFIG_DIR`). |
-| model, effort | empty for the CLI's default. Claude: `sonnet`, `opus`, `haiku`, `fable` or an id. opencode: `provider/model`, see `opencode models`; effort is the model's variant. |
+| model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), or Claude's. Effort then offers only that model's levels. |
 | lead may use it | whether the lead can put it to work |
 
 The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. The setup is saved to `~/.config/agent-watch/config.json`.

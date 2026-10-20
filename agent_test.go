@@ -228,3 +228,56 @@ func TestSendToRunningAgentIsQueued(t *testing.T) {
 		t.Errorf("a stopped turn must not deliver queued messages: running=%v, lead got %q", a.running, m.queue[len(m.queue)-1])
 	}
 }
+
+// Typing on a model row searches its list without touching the model; choosing sets it and drops an effort it lacks.
+func TestModelPicker(t *testing.T) {
+	cfg := Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{{Name: "work", CLI: "opencode", Model: "old/model", Effort: "xhigh"}}}
+	known := map[string]modelList{accountKey(cfg.Agents[0]): {list: []modelInfo{
+		{"opencode-go/deepseek-v4.1-flash", "$0.15/$0.6", []string{"low", "high", "max"}},
+		{"opencode/deepseek-v4.1-flash-free", "free", []string{"low", "high", "max"}},
+		{"opencode/glm-5.3-flash-free", "free", nil},
+	}}}
+	m := &model{cfg: cfg, setup: &setupForm{cfg: cfg, known: known}}
+	f := m.setup
+	f.row = slices.IndexFunc(f.fields(), func(fl field) bool { return fl.label == "model" && fl.agent == 0 })
+	key := func(s string) {
+		for _, r := range s {
+			if r == ' ' {
+				m.setupKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{r}})
+			} else {
+				m.setupKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+		}
+	}
+	key("deep free")
+	cur := f.fields()[f.row]
+	if found := f.found(cur); !f.open || len(found) != 1 || found[0].ID != "opencode/deepseek-v4.1-flash-free" {
+		t.Fatalf("open=%v found %v, want just the free deepseek", f.open, found)
+	}
+	if f.cfg.Agents[0].Model != "old/model" {
+		t.Errorf("searching changed the model to %q", f.cfg.Agents[0].Model)
+	}
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEnter})
+	a := f.cfg.Agents[0]
+	if f.open || a.Model != "opencode/deepseek-v4.1-flash-free" || a.Effort != "" {
+		t.Errorf("after choosing: open=%v model=%q effort=%q; want the model set and xhigh (which it lacks) cleared", f.open, a.Model, a.Effort)
+	}
+	if got := f.effortChoices(a); !slices.Equal(got, []string{"", "low", "high", "max"}) {
+		t.Errorf("effort choices %v, want the model's own", got)
+	}
+	key("x") // esc closes only the picker
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if f.open || m.setup == nil {
+		t.Errorf("esc should close the picker and keep the setup open")
+	}
+	m.setupKey(tea.KeyMsg{Type: tea.KeyBackspace}) // backspace lists everything; the first entry is "default"
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if f.cfg.Agents[0].Model != "" {
+		t.Errorf("choosing default left the model %q", f.cfg.Agents[0].Model)
+	}
+	key("my/own-model") // a model that isn't listed is kept as typed
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if f.cfg.Agents[0].Model != "my/own-model" {
+		t.Errorf("an unlisted model became %q", f.cfg.Agents[0].Model)
+	}
+}
