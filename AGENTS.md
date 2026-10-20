@@ -17,7 +17,7 @@ Go isn't on every PATH here; it may live in `/usr/local/go/bin`. Keep `go.mod`'s
 | File | What |
 |---|---|
 | `main.go` | flags (`-c`, `-r`, `-v`, `-h`); anything else goes to `cli` |
-| `config.go` | `Config`: the `Lead` (its own cli/account/model/effort) and the `Agents` list; colors; `accountKey` |
+| `config.go` | `Config`: the `Lead` (its own cli/account/model/effort) and the `Agents` list (types, any number of agents each); a project's `.agent-watch.json` on top (`withProject`); colors; `accountKey` |
 | `agent.go` | `command` builds one turn for `claude` or `opencode`; `parse` turns their JSON output into `Line`s and a `Delta` (cost, tokens, Claude's limits) |
 | `run.go` | `agentState.start/stop`; the request files behind `aw spawn/send/stop`; `handle` validates them |
 | `tui.go` | the model, keys, mouse, layout, views |
@@ -49,6 +49,7 @@ All of these were real bugs. Each has a test or a comment; keep both.
 
 - The request JSON between `cli` and the TUI: a running TUI may be an older binary than the `aw` the lead calls.
 - `config.json` and `state.json`: users have them. Loading an older shape must keep working (see the v0.1.0 lead in `loadConfig`).
+- The setup edits only the global config (`model.global`); what runs is `model.cfg`, the global plus the project file. Never save `cfg`, or a project's overrides leak into every project.
 
 ## Style
 

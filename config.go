@@ -73,6 +73,76 @@ func loadConfig() (Config, bool) {
 	return c, true
 }
 
+// projectFile overrides the global setup for one project; it lives in the project or a parent folder.
+const projectFile = ".agent-watch.json"
+
+// findProject returns the nearest project file at or above dir, or "".
+func findProject(dir string) string {
+	for d := dir; ; d = filepath.Dir(d) {
+		p := filepath.Join(d, projectFile)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+// loadProject reads a project file. A broken one is an error, so a typo isn't silently ignored.
+func loadProject(p string) (Config, error) {
+	var c Config
+	b, err := os.ReadFile(p)
+	if err == nil {
+		err = json.Unmarshal(b, &c)
+	}
+	return c, err
+}
+
+// withProject puts a project's overrides on top of the global setup: each lead field it sets,
+// and its agents by name, replacing a global agent of the same name or adding a new one.
+func withProject(global, project Config) Config {
+	c := global
+	c.Agents = slices.Clone(global.Agents)
+	for _, f := range [][2]*string{{&c.Lead.CLI, &project.Lead.CLI}, {&c.Lead.Data, &project.Lead.Data},
+		{&c.Lead.Model, &project.Lead.Model}, {&c.Lead.Effort, &project.Lead.Effort}} {
+		if *f[1] != "" {
+			*f[0] = *f[1]
+		}
+	}
+	for _, a := range project.Agents {
+		if i := slices.IndexFunc(c.Agents, func(g Agent) bool { return g.Name == a.Name }); i >= 0 {
+			c.Agents[i] = a
+		} else {
+			c.Agents = append(c.Agents, a)
+		}
+	}
+	return c
+}
+
+// overrides says what a project file changes, for the setup screen: "lead model · agents ds3, local".
+func overrides(project Config) string {
+	var parts []string
+	var lead []string
+	for _, f := range []struct{ name, v string }{{"cli", project.Lead.CLI}, {"account", project.Lead.Data},
+		{"model", project.Lead.Model}, {"effort", project.Lead.Effort}} {
+		if f.v != "" {
+			lead = append(lead, f.name)
+		}
+	}
+	if len(lead) > 0 {
+		parts = append(parts, "lead "+strings.Join(lead, ", "))
+	}
+	var names []string
+	for _, a := range project.Agents {
+		names = append(names, a.Name)
+	}
+	if len(names) > 0 {
+		parts = append(parts, "agents "+strings.Join(names, ", "))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func saveConfig(c Config) error {
 	p := configPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

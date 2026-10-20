@@ -69,6 +69,23 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 
 The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. The setup is saved to `~/.config/agent-watch/config.json`.
 
+Agents are types, not a team that always runs together: tell the lead which ones you want and how many, e.g. *"use 3 ds3 for the parsers and one opus for the review"*, and it starts just those. If you don't say, it picks a type and names it in its plan.
+
+### Per project
+
+A project can change the setup with an `.agent-watch.json` in its folder (or any parent). It has the same shape as the global config and only needs what changes: lead fields it sets win, and an agent with the same name as a global one replaces it; new names are added for this project only.
+
+```json
+{
+  "lead": { "model": "sonnet" },
+  "agents": [
+    { "name": "ds3", "cli": "opencode", "model": "opencode-go/deepseek-v4.1-flash", "effort": "max", "enabled": true }
+  ]
+}
+```
+
+The setup screen edits the global config and shows what the project overrides; edit the project file itself to change those.
+
 ## Keys
 
 | Key | |

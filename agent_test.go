@@ -281,3 +281,72 @@ func TestModelPicker(t *testing.T) {
 		t.Errorf("an unlisted model became %q", f.cfg.Agents[0].Model)
 	}
 }
+
+// A project file overrides lead fields it sets and agents by name, and saving the setup never writes it into the global file.
+func TestProjectOverrides(t *testing.T) {
+	global := Config{Lead: Lead{CLI: "claude", Model: "opus", Effort: "high"},
+		Agents: []Agent{{Name: "ds3", CLI: "opencode", Model: "a/ds", Enabled: true}, {Name: "haiku", CLI: "claude", Model: "haiku"}}}
+	project := Config{Lead: Lead{Model: "sonnet"},
+		Agents: []Agent{{Name: "ds3", CLI: "opencode", Model: "a/ds-pro", Enabled: true}, {Name: "local", CLI: "opencode", Model: "x/y", Enabled: true}}}
+	c := withProject(global, project)
+	if c.Lead != (Lead{CLI: "claude", Model: "sonnet", Effort: "high"}) {
+		t.Errorf("lead %+v, want the project's model on the global lead", c.Lead)
+	}
+	if len(c.Agents) != 3 || c.Agents[0].Model != "a/ds-pro" || c.Agents[1].Name != "haiku" || c.Agents[2].Name != "local" {
+		t.Errorf("agents %+v, want ds3 replaced, haiku kept, local added", c.Agents)
+	}
+	if global.Agents[0].Model != "a/ds" {
+		t.Errorf("withProject changed the global config")
+	}
+	if got := overrides(project); got != "lead model · agents ds3, local" {
+		t.Errorf("overrides = %q", got)
+	}
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "src", "deep")
+	os.MkdirAll(sub, 0o755)
+	if findProject(sub) != "" {
+		t.Errorf("found a project file where there is none")
+	}
+	os.WriteFile(filepath.Join(root, projectFile), []byte(`{"lead": {"model": "sonnet"}}`), 0o644)
+	if p := findProject(sub); p != filepath.Join(root, projectFile) {
+		t.Errorf("findProject from a subfolder = %q", p)
+	}
+	os.WriteFile(filepath.Join(root, projectFile), []byte(`{"lead": {`), 0o644)
+	if _, err := loadProject(filepath.Join(root, projectFile)); err == nil {
+		t.Errorf("a broken project file loaded without an error")
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &model{cfg: c, global: global, project: project, projectPath: "/p/.agent-watch.json", lead: &agentState{name: "lead", cfg: c.lead()}}
+	m.setup = m.newSetup()
+	if !strings.Contains(m.setup.note, "agents ds3, local") {
+		t.Errorf("the setup doesn't say what the project overrides: %q", m.setup.note)
+	}
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEnter})
+	saved, _ := loadConfig()
+	if len(saved.Agents) != 2 || saved.Agents[0].Model != "a/ds" || saved.Lead.Model != "opus" {
+		t.Errorf("the project's overrides leaked into the global config: %+v", saved)
+	}
+	if len(m.cfg.Agents) != 3 {
+		t.Errorf("after saving, the running config lost the project's agents: %+v", m.cfg.Agents)
+	}
+}
+
+// Opening and cancelling the setup keeps the colors of agents that only the project file has.
+func TestSetupKeepsProjectColors(t *testing.T) {
+	global := Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{{Name: "claude", CLI: "claude"}}}
+	project := Config{Agents: []Agent{{Name: "ds3", CLI: "opencode", Enabled: true}}}
+	m := &model{global: global, project: project, cfg: withProject(global, project)}
+	setColors(m.cfg)
+	want := agentColors["ds3"]
+	m.setup = m.newSetup()
+	m.setupKey(tea.KeyMsg{Type: tea.KeyDown})
+	if agentColors["ds3"] != want {
+		t.Errorf("moving around the setup recolored ds3")
+	}
+	m.setupKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if _, ok := agentColors["ds3"]; !ok || agentColors["ds3"] != want {
+		t.Errorf("cancelling the setup lost ds3's color")
+	}
+}

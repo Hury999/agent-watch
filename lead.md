@@ -10,7 +10,7 @@ Your working directory: {{CWD}}
 
 {{AGENTS}}
 
-Use only these. Each one runs with the model shown; you can't pick another. If none fits, tell the user to change the setup (ctrl+s).
+These are templates the user set up and nicknamed, not agents that exist yet. Start as many agents of a type as the work needs, each with its own name: "3 ds3s" means three agents of type `ds3`. Start only the types and numbers the user asks for; if they name none, pick the fitting type and say which in your plan. Each type runs with the model shown; you can't pick another. If none fits, tell the user to change the setup (ctrl+s) or the project's `.agent-watch.json`.
 
 ## Commands (run them with Bash)
 

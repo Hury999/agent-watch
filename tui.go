@@ -15,7 +15,10 @@ import (
 )
 
 type model struct {
-	cfg              Config
+	cfg              Config // what runs: the global setup with the project's overrides on top
+	global           Config // what the setup screen edits and saves
+	project          Config // the project file's overrides
+	projectPath      string
 	runDir, cwd, exe string
 	lead             *agentState
 	workers          []*agentState
@@ -47,9 +50,21 @@ func tick() tea.Cmd {
 
 // runTUI opens a new run, or continues the saved one in resume.
 func runTUI(resume string) error {
-	cfg, saved := loadConfig()
-	setColors(cfg)
+	global, saved := loadConfig()
 	cwd, _ := os.Getwd()
+	var project Config
+	projectPath := findProject(cwd)
+	if projectPath != "" {
+		var err error
+		if project, err = loadProject(projectPath); err != nil {
+			return fmt.Errorf("%s: %w", projectPath, err)
+		}
+	}
+	cfg := withProject(global, project)
+	if e := cfg.check(); e != "" {
+		return fmt.Errorf("%s: %s", projectPath, e)
+	}
+	setColors(cfg)
 	exe, _ := os.Executable()
 	runDir := filepath.Join(stateDir(), time.Now().Format("20060102-150405"))
 	if resume != "" {
@@ -64,7 +79,7 @@ func runTUI(resume string) error {
 	in.Cursor.Style = sAccent
 	in.Placeholder = "message the lead…"
 	in.Focus()
-	m := &model{cfg: cfg, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{}, models: map[string]modelList{},
+	m := &model{cfg: cfg, global: global, project: project, projectPath: projectPath, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{}, models: map[string]modelList{},
 		lead: &agentState{name: "lead", dir: cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI)}}
 	if resume != "" {
 		r, err := loadRun(resume)
@@ -78,7 +93,7 @@ func runTUI(resume string) error {
 		m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "resumed the run from " + r.Saved.Format("Jan 02 15:04")})
 	}
 	if !saved {
-		m.setup = &setupForm{cfg: cfg, known: m.models}
+		m.setup = m.newSetup()
 	}
 	prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := prog.Run()
@@ -257,7 +272,7 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "ctrl+s":
-		m.setup = &setupForm{cfg: m.cfg, known: m.models}
+		m.setup = m.newSetup()
 		return m, m.prefetchModels()
 	case "tab":
 		m.setFocusList(!m.focusList)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -11,7 +12,8 @@ import (
 )
 
 type setupForm struct {
-	cfg   Config
+	cfg   Config // the global setup being edited
+	note  string // what the project file overrides, if there is one
 	row   int
 	err   string
 	known map[string]modelList // models per account, shared with the model so they're fetched once
@@ -64,6 +66,16 @@ func (f *setupForm) fields() []field {
 	}})
 }
 
+// newSetup opens the setup on the global config; the project's overrides are only shown.
+func (m *model) newSetup() *setupForm {
+	f := &setupForm{cfg: m.global, known: m.models}
+	if o := overrides(m.project); o != "" {
+		home, _ := os.UserHomeDir()
+		f.note = "this project overrides " + o + " (" + strings.Replace(m.projectPath, home, "~", 1) + ")"
+	}
+	return f
+}
+
 func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	f := m.setup
 	fs := f.fields()
@@ -84,6 +96,8 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		f.row = min(f.row+1, len(fs)-1)
 	case "esc":
 		m.setup = nil
+		setColors(m.cfg) // drop the colors of the edits just cancelled
+		return m, nil
 	case "ctrl+d":
 		if cur.agent >= 0 && len(f.cfg.Agents) > 1 {
 			f.cfg.Agents = slices.Delete(f.cfg.Agents, cur.agent, cur.agent+1)
@@ -94,20 +108,21 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cur.action()
 			break
 		}
-		if f.err = f.cfg.check(); f.err != "" {
+		cfg := withProject(f.cfg, m.project)
+		if f.err = cfg.check(); f.err != "" {
 			break
 		}
-		if f.cfg.lead() != m.cfg.lead() {
+		if cfg.lead() != m.cfg.lead() {
 			if m.lead.running {
 				f.err = "the lead is mid-turn; change it when it's done"
 				break
 			}
-			m.lead = &agentState{name: "lead", dir: m.cwd, cfg: f.cfg.lead(), session: newSession(f.cfg.lead().CLI),
-				lines: []Line{{Kind: "info", Text: "new lead session: " + describe(f.cfg.lead())}}}
+			m.lead = &agentState{name: "lead", dir: m.cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI),
+				lines: []Line{{Kind: "info", Text: "new lead session: " + describe(cfg.lead())}}}
 		}
-		m.cfg = f.cfg
+		m.global, m.cfg = f.cfg, cfg
 		setColors(m.cfg)
-		if err := saveConfig(m.cfg); err != nil {
+		if err := saveConfig(m.global); err != nil {
 			m.status = "could not save the config: " + err.Error()
 		}
 		m.setup = nil
@@ -138,7 +153,7 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			*cur.text += string(k.Runes)
 		}
 	}
-	setColors(f.cfg)
+	setColors(withProject(f.cfg, m.project)) // colors follow what will run, project agents included
 	return m, nil
 }
 
@@ -291,6 +306,9 @@ func (f *setupForm) view(w, h int) string {
 	}
 	help := []string{"", sDim.Render("empty model or account = the CLI's default · type on a model row to pick from its list"),
 		sDim.Render("another account: opencode → its .db file, claude → its config dir (~/.claude-work)")}
+	if f.note != "" {
+		help = append(help, sYellow.Render(xansi.Truncate("⚑ "+f.note, pw-4, "…")))
+	}
 	room := max(h-4-len(help), 5) // panel borders, keys line and error line
 	start := min(max(cursor-room/2, 0), max(len(lines)-room, 0))
 	lines = lines[start:min(start+room, len(lines))]
