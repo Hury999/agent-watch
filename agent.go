@@ -58,8 +58,8 @@ func account(a Agent) (env, args []string) {
 	return []string{"OPENCODE_DB=" + expand(a.Data)}, []string{"--standalone"}
 }
 
-// command builds one turn. A non-empty system prompt marks the lead.
-func command(a Agent, session string, first bool, prompt, system, dir string) *exec.Cmd {
+// command builds one turn. A non-empty system prompt marks the lead; edits says whether it may edit files.
+func command(a Agent, session string, first bool, prompt, system, dir string, edits bool) *exec.Cmd {
 	if strings.HasPrefix(prompt, "-") {
 		prompt = " " + prompt // or the CLI reads it as a flag
 	}
@@ -78,8 +78,11 @@ func command(a Agent, session string, first bool, prompt, system, dir string) *e
 			args = append(args, "--resume", session)
 		}
 		if system != "" {
-			// No edit tools: the lead must not fix its agents' code itself.
-			args = append(args, "--allowedTools", "Bash Read Grep Glob", "--append-system-prompt", system)
+			tools := "Bash Read Grep Glob" // no edit tools unless the user allows it: the lead must not fix its agents' code
+			if edits {
+				tools += " Edit Write"
+			}
+			args = append(args, "--allowedTools", tools, "--append-system-prompt", system)
 		} else {
 			args = append(args, "--permission-mode", "bypassPermissions")
 		}
@@ -93,7 +96,9 @@ func command(a Agent, session string, first bool, prompt, system, dir string) *e
 			args = append(args, "--model", model)
 		}
 		if system != "" {
-			args = append(args, "--agent", "plan") // opencode's agent that can't edit files
+			if !edits {
+				args = append(args, "--agent", "plan") // opencode's agent that can't edit files
+			}
 			if first {
 				prompt = system + "\n\n---\n\n" + prompt
 			}

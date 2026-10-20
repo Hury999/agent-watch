@@ -229,10 +229,16 @@ func (m *model) flushLead() {
 	}
 	msg := strings.Join(append(m.notes, m.queue...), "\n\n")
 	m.notes, m.queue = nil, nil
+	m.lead.edits = m.cfg.Lead.Edit
 	if err := m.lead.start(msg, m.systemPrompt(), []string{"AGENT_WATCH_DIR=" + m.runDir}, m.logPath(m.lead)); err != nil {
 		m.lead.lines = append(m.lead.lines, Line{Kind: "fail", Text: "could not start the lead: " + err.Error()})
 	}
 }
+
+const (
+	noEditRule = "**Never edit project files yourself.** You have no edit tools on purpose. If an agent's work is wrong, that agent fixes it. Only the user can change this rule (in the setup)."
+	editRule   = "**You may edit files, but keep it small.** The user lets you make fixes of a line or two that a feedback round isn't worth, resolve merge conflicts, and do housekeeping (docs, config). Feature work and anything substantial still goes to agents, and when an agent's work is wrong, it fixes it: give it feedback instead of fixing it yourself. Say in your report what you edited."
+)
 
 func (m *model) systemPrompt() string {
 	var s []string
@@ -244,7 +250,11 @@ func (m *model) systemPrompt() string {
 	if len(s) == 0 {
 		s = []string{"- none enabled: tell the user to enable agents in the setup (ctrl+s)"}
 	}
-	return strings.NewReplacer("{{EXE}}", m.exe, "{{CWD}}", m.cwd, "{{AGENTS}}", strings.Join(s, "\n")).Replace(leadPrompt)
+	editing := noEditRule
+	if m.cfg.Lead.Edit {
+		editing = editRule
+	}
+	return strings.NewReplacer("{{EXE}}", m.exe, "{{CWD}}", m.cwd, "{{AGENTS}}", strings.Join(s, "\n"), "{{EDITING}}", editing).Replace(leadPrompt)
 }
 
 func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -588,6 +598,9 @@ func (m *model) View() string {
 	} else {
 		lw := m.leftW()
 		mt := sAccent.Render("✻ ") + agentTitle(m.lead, sBold.Render("Lead"))
+		if m.cfg.Lead.Edit {
+			mt += sDim.Render(" · may edit")
+		}
 		left := panel(mt, m.mvp.View()+"\n"+statusLine(m.lead, "type below to talk to the lead"), lw, bodyH, !m.focusList)
 		run, done := 0, 0
 		for _, s := range m.workers {

@@ -97,7 +97,7 @@ func TestCommand(t *testing.T) {
 		{Agent{Name: "work", CLI: "opencode", Data: "/data/work.db"}, "OPENCODE_DB=/data/work.db", "--standalone", "--model"},
 		{Agent{Name: "claude-2", CLI: "claude", Data: "/cfg/two", Model: "opus"}, "CLAUDE_CONFIG_DIR=/cfg/two", "opus", "--standalone"},
 	} {
-		cmd := command(tc.a, newSession(tc.a.CLI), true, "hi", "", "/work/tree")
+		cmd := command(tc.a, newSession(tc.a.CLI), true, "hi", "", "/work/tree", false)
 		env := cmd.Environ()
 		if !slices.Contains(env, tc.env) || slices.Contains(env, "PWD=/somewhere/else") {
 			t.Errorf("%s: env lacks %s or kept a stale PWD", tc.a.Name, tc.env)
@@ -348,5 +348,24 @@ func TestSetupKeepsProjectColors(t *testing.T) {
 	m.setupKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if _, ok := agentColors["ds3"]; !ok || agentColors["ds3"] != want {
 		t.Errorf("cancelling the setup lost ds3's color")
+	}
+}
+
+// The lead only gets edit tools, and the rule that comes with them, when the setup allows it.
+func TestLeadMayEdit(t *testing.T) {
+	for _, edits := range []bool{false, true} {
+		claude := strings.Join(command(Agent{CLI: "claude"}, "u", true, "hi", "rules", "/w", edits).Args, " ")
+		opencode := strings.Join(command(Agent{CLI: "opencode"}, "ses_x", true, "hi", "rules", "/w", edits).Args, " ")
+		if strings.Contains(claude, "Edit Write") != edits || strings.Contains(opencode, "--agent plan") == edits {
+			t.Errorf("edits=%v: claude %q, opencode %q", edits, claude, opencode)
+		}
+		m := &model{cfg: Config{Lead: Lead{CLI: "claude", Edit: edits}}}
+		if p := m.systemPrompt(); strings.Contains(p, "You may edit files") != edits || strings.Contains(p, "Never edit project files") == edits {
+			t.Errorf("edits=%v: the lead's instructions have the wrong rule", edits)
+		}
+	}
+	// agents always edit: the toggle is only about the lead
+	if a := strings.Join(command(Agent{CLI: "claude"}, "u", true, "hi", "", "/w", false).Args, " "); !strings.Contains(a, "bypassPermissions") {
+		t.Errorf("an agent lost its permissions: %q", a)
 	}
 }

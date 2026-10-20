@@ -45,6 +45,7 @@ func (f *setupForm) fields() []field {
 		{label: "account", text: &c.Lead.Data, empty: "default", agent: -1},
 		{label: "model", text: &c.Lead.Model, empty: "default", agent: -1, of: lead},
 		{label: "effort", text: &c.Lead.Effort, choices: f.effortChoices(c.lead()), agent: -1},
+		{label: "may edit files", toggle: &c.Lead.Edit, agent: -1},
 	}
 	for i := range c.Agents {
 		a := &c.Agents[i]
@@ -253,7 +254,7 @@ func (f *setupForm) view(w, h int) string {
 		if i == 0 {
 			lines = append(lines, sBold.Render("Lead")+sDim.Render(" · the agent you talk to"))
 		}
-		if i == 4 {
+		if i == 5 {
 			lines = append(lines, "", sBold.Render("Agents")+sDim.Render(" · who the lead can put to work"))
 		}
 		if fl.head {

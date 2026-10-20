@@ -27,6 +27,7 @@ type Lead struct {
 	Data   string `json:"data,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Edit   bool   `json:"edit,omitempty"` // the lead may edit files itself (small fixes, merges); off, it only briefs and checks
 }
 
 type Config struct {
@@ -110,6 +111,7 @@ func withProject(global, project Config) Config {
 			*f[0] = *f[1]
 		}
 	}
+	c.Lead.Edit = c.Lead.Edit || project.Lead.Edit // a project can turn it on, not off
 	for _, a := range project.Agents {
 		if i := slices.IndexFunc(c.Agents, func(g Agent) bool { return g.Name == a.Name }); i >= 0 {
 			c.Agents[i] = a
@@ -129,6 +131,9 @@ func overrides(project Config) string {
 		if f.v != "" {
 			lead = append(lead, f.name)
 		}
+	}
+	if project.Lead.Edit {
+		lead = append(lead, "may edit files")
 	}
 	if len(lead) > 0 {
 		parts = append(parts, "lead "+strings.Join(lead, ", "))

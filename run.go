@@ -45,6 +45,7 @@ type agentState struct {
 	in, out            int64         // tokens over all turns
 	turnIn, turnOut    int64
 	turnCost           float64
+	edits              bool // the lead may edit files; set from the setup before each of its turns
 	// messages sent while it was mid-turn; they start its next turn.
 	// shortcut: not saved, so closing agent-watch mid-turn drops them; save them if that bites.
 	pending []string
@@ -67,7 +68,7 @@ type stopMsg struct {
 // start runs one turn in the background. Its output arrives as linesMsg, its end as doneMsg,
 // and the raw output is appended to logPath.
 func (a *agentState) start(prompt, system string, env []string, logPath string) error {
-	cmd := command(a.cfg, a.session, a.turns == 0, prompt, system, a.dir)
+	cmd := command(a.cfg, a.session, a.turns == 0, prompt, system, a.dir, a.edits)
 	cmd.Env = append(cmd.Env, env...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

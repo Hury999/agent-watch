@@ -2,7 +2,7 @@
 
 A terminal app where a **lead** agent puts coding **agents** to work, and you watch all of them live.
 
-You chat with the lead. When you agree on work, it shows you a plan. After your go, it gives each agent its own git worktree and a detailed brief, verifies their work itself (diffs, your tests, its own probes, cheat checks) and sends feedback until it's right. It never edits code itself; it has no edit tools.
+You chat with the lead. When you agree on work, it shows you a plan. After your go, it gives each agent its own git worktree and a detailed brief, verifies their work itself (diffs, your tests, its own probes, cheat checks) and sends feedback until it's right. It never edits code itself: it has no edit tools, unless you switch on **may edit files** in the setup, which lets it make small fixes, resolve merge conflicts and do housekeeping while real work still goes to agents.
 
 Claude Code and opencode can both lead or work, on any account and model, so Claude can lead opencode agents on cheap or free models, or the other way round.
 
@@ -67,7 +67,7 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 | model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), or Claude's. Effort then offers only that model's levels. |
 | lead may use it | whether the lead can put it to work |
 
-The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. The setup is saved to `~/.config/agent-watch/config.json`.
+The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. **may edit files** (off by default) gives it edit tools for small fixes, merges and housekeeping; a project file can switch it on with `"lead": {"edit": true}`. The setup is saved to `~/.config/agent-watch/config.json`.
 
 Agents are types, not a team that always runs together: tell the lead which ones you want and how many, e.g. *"use 3 ds3 for the parsers and one opus for the review"*, and it starts just those. If you don't say, it picks a type and names it in its plan.
 

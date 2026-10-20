@@ -43,7 +43,7 @@ All of these were real bugs. Each has a test or a comment; keep both.
 - **Session ids:** Claude wants a v4 UUID, opencode wants a `ses` prefix (`newSession`).
 - **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
 - **glamour's dark style keeps `##` before headings** and colors inline code red; `markdown` overrides both. The user cares how agent markdown looks.
-- **The lead has no edit tools on purpose** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent). Its job is to brief and verify, never to fix agents' code. Don't give it edit tools.
+- **The lead has no edit tools by default** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent): its job is to brief and verify, not to fix agents' code. Only the user's **may edit files** setting (`Lead.Edit`) gives them back, along with the small-fixes rule (`editRule`). Keep `--append-system-prompt` right after `--allowedTools`: the tool list takes several values and would swallow a prompt that followed it.
 
 ## Keep compatible
 
