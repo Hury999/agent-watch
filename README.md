@@ -1,21 +1,41 @@
-# agent-watch
+<p align="center"><img src="assets/banner.svg" alt="agent-watch" width="720"></p>
 
 A terminal app where a **master** agent leads **slave** coding agents, and you watch all of them live.
 
-You chat with the master on the left. When you agree on work, the master shows you a plan. After your go, it creates a git worktree per slave, briefs each slave, verifies their work itself (diff, tests, cheat checks), and sends feedback until it's right. It never edits code itself; it has no edit tools.
+You chat with the master. When you agree on work, it shows you a plan. After your go, it gives each slave its own git worktree and a detailed brief, verifies their work itself (diffs, your tests, its own probes, cheat checks) and sends feedback until it's right. It never edits code itself; it has no edit tools.
 
+Any of Claude Code and opencode can be the master or a slave, so Claude can lead opencode agents on cheap or free models, or the other way round.
+
+## Quick start
+
+**1. Have at least one agent CLI installed and logged in:** [Claude Code](https://claude.com/claude-code) (`claude`) and/or [opencode](https://opencode.ai) (`opencode`). You also need `git` and [Go](https://go.dev/dl/) 1.24+.
+
+**2. Install:**
+
+```bash
+git clone https://github.com/n-delic/agent-watch && cd agent-watch
+go build -o agent-watch .
+mkdir -p ~/.local/bin
+ln -s "$PWD/agent-watch" ~/.local/bin/agent-watch
+ln -s "$PWD/agent-watch" ~/.local/bin/aw          # the short name
 ```
-┌─ MASTER · claude sonnet high ─────┬─ SLAVES ──────────────────────────┐
-│ › add a parser and CLI flags      │ ● parser  opencode-personal  r1   │
-│ ⚙ Bash git worktree add …         │ ✓ cli     opencode-decomp    r2   │
-│ Plan: parser → opencode-personal… ├─ PARSER · live ───────────────────┤
-│ › go                              │ ⚙ edit parser.py                  │
-│ » slave cli: turn 2 finished      │ ⚙ shell python3 test_parser.py    │
-│ Verified cli in 2 rounds…         │   OK                              │
-├───────────────────────────────────┴───────────────────────────────────┤
-│ > _                                                                   │
-└───────────────────────────────────────────────────────────────────────┘
+
+(`~/.local/bin` must be on your `PATH`.)
+
+**3. Run it in the project you want to work on:**
+
+```bash
+cd ~/code/my-project
+aw
 ```
+
+**4. Pick your agents.** The first launch opens the setup: choose the master (agent, model, effort) and enable the slaves it may use, then `enter`. Change it any time with `ctrl+s`.
+
+**5. Talk to the master** like you would to Claude Code:
+
+> add rate limiting to the API client, use two slaves
+
+It reads the code, proposes a plan (which slave does what, in which worktree) and waits. Say **go**, then watch the slaves work on the right. When they're done and verified, it asks before committing or merging anything.
 
 What you see:
 
@@ -33,14 +53,13 @@ What you see:
 
 Any of them can be the master; slaves are the kinds you enable in setup.
 
-## Build and run
+The setup is saved to `~/.config/agent-watch/config.json`.
+
+## Update
 
 ```bash
-go build -o agent-watch .
-cd ~/code/some-repo && ~/projects/agent-watch/agent-watch
+cd agent-watch && git pull && go build -o agent-watch .
 ```
-
-The first launch opens the setup (master agent/model/effort, which slaves are enabled and with what model). It's saved to `~/.config/agent-watch/config.json`; reopen it with `ctrl+s`.
 
 ## Keys
 

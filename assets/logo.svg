@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="t">
+  <title id="t">agent-watch</title>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#1C1B1A" stroke="#3C3C3C" stroke-width="4"/>
+  <!-- the eye: the master watching -->
+  <path d="M92 240 Q256 72 420 240 Q256 408 92 240 Z" fill="none" stroke="#D97757" stroke-width="24" stroke-linejoin="round"/>
+  <circle cx="256" cy="240" r="60" fill="#D97757"/>
+  <!-- its pupil: the spark of the app's spinner -->
+  <g stroke="#1C1B1A" stroke-width="13" stroke-linecap="round">
+    <line x1="256" y1="206" x2="256" y2="274"/>
+    <line x1="226.6" y1="223" x2="285.4" y2="257"/>
+    <line x1="226.6" y1="257" x2="285.4" y2="223"/>
+  </g>
+  <circle cx="276" cy="218" r="7" fill="#F5B08E"/>
+  <!-- the slaves, in the app's agent colors -->
+  <path d="M186 404 Q256 436 326 404" fill="none" stroke="#3C3C3C" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 14"/>
+  <circle cx="186" cy="404" r="20" fill="#6CB6FF"/>
+  <circle cx="256" cy="420" r="20" fill="#B392F0"/>
+  <circle cx="326" cy="404" r="20" fill="#D97757"/>
+</svg>
