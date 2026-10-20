@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -195,5 +196,35 @@ func TestSaveAndResume(t *testing.T) {
 	}
 	if !slices.Equal(r.Notes, []string{"note", "queued"}) {
 		t.Errorf("notes %v, want the lead's untold note and queued message", r.Notes)
+	}
+}
+
+// A message for a mid-turn agent waits for its turn to end, then starts the next one.
+func TestSendToRunningAgentIsQueued(t *testing.T) {
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "opencode"), []byte("#!/bin/sh\nexit 0\n"), 0o755) // a fake agent CLI
+	t.Setenv("PATH", bin)
+	m := &model{runDir: t.TempDir(), lead: &agentState{name: "lead", running: true}} // a busy lead only queues
+	prog = tea.NewProgram(m)
+	a := &agentState{name: "search", dir: t.TempDir(), cfg: Agent{Name: "work", CLI: "opencode"}, session: "ses_x",
+		turns: 1, running: true, started: time.Now()}
+	m.workers = []*agentState{a}
+
+	if ans := m.handle(request{Op: "send", Name: "search", Prompt: "main moved, rebase"}); !strings.HasPrefix(ans, "ok") || len(a.pending) != 1 {
+		t.Fatalf("send to a running agent: %q, pending %v", ans, a.pending)
+	}
+	m.finished(a, 0)
+	if !a.running || a.turns != 2 || len(a.pending) != 0 || !strings.Contains(a.lines[len(a.lines)-1].Text, "main moved, rebase") {
+		t.Errorf("the queued message didn't start turn 2: running=%v turns=%d pending=%v", a.running, a.turns, a.pending)
+	}
+	if last := m.queue[len(m.queue)-1]; !strings.Contains(last, "were delivered") {
+		t.Errorf("the lead wasn't told: %s", last)
+	}
+
+	a.pending = []string{"one more thing"} // and a turn that gets stopped keeps it from being sent
+	a.stopReason = "stopped by the user"
+	m.finished(a, -1)
+	if a.running || len(a.pending) != 0 || !strings.Contains(m.queue[len(m.queue)-1], "did NOT get") {
+		t.Errorf("a stopped turn must not deliver queued messages: running=%v, lead got %q", a.running, m.queue[len(m.queue)-1])
 	}
 }

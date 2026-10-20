@@ -45,6 +45,9 @@ type agentState struct {
 	in, out            int64         // tokens over all turns
 	turnIn, turnOut    int64
 	turnCost           float64
+	// messages sent while it was mid-turn; they start its next turn.
+	// shortcut: not saved, so closing agent-watch mid-turn drops them; save them if that bites.
+	pending []string
 }
 
 type linesMsg struct {
@@ -168,10 +171,12 @@ func (m *model) handle(r request) string {
 		switch {
 		case a == nil:
 			return "error: no agent named " + r.Name
-		case a.running:
-			return "error: " + r.Name + " is still running; wait for its [agent-watch] message"
 		case strings.TrimSpace(r.Prompt) == "":
 			return "error: the message on stdin is empty"
+		}
+		if a.running {
+			m.hold(a, "the lead", r.Prompt)
+			return "ok: " + r.Name + " is mid-turn, so your message is queued: it starts its next turn as soon as this one ends. You get an [agent-watch] message when that turn ends; end your turn now."
 		}
 	case "stop":
 		if a == nil || !a.running {
@@ -193,6 +198,13 @@ func (m *model) handle(r request) string {
 	}
 	return fmt.Sprintf("ok: %s turn %d started on %s. You get an [agent-watch] message when it finishes; end your turn now instead of waiting.",
 		a.name, a.turns, describe(a.cfg))
+}
+
+// hold keeps a message for a mid-turn agent until its turn ends (see finished).
+func (m *model) hold(a *agentState, from, text string) {
+	a.pending = append(a.pending, "Message from "+from+", sent while you were working:\n"+strings.TrimSpace(text))
+	a.lines = append(a.lines, Line{Kind: "info", Text: from + " queued a message: it starts the next turn when this one ends"})
+	m.dirty = true
 }
 
 // pollRequests answers the request files the CLI dropped; it reports whether there were any.

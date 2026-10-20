@@ -164,8 +164,24 @@ func (m *model) finished(a *agentState, code int) {
 		reply = "(no reply)"
 	}
 	m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: fmt.Sprintf("agent %s %s turn %d in %s", a.name, a.status(), a.turns, dur(a.lastDur))})
-	m.toLead(fmt.Sprintf("[agent-watch] Agent %q (%s) %s on turn %d after %s.\nWorkdir: %s\nIts final reply:\n%s",
-		a.name, describe(a.cfg), a.status(), a.turns, dur(a.lastDur), a.dir, reply))
+	report := fmt.Sprintf("[agent-watch] Agent %q (%s) %s on turn %d after %s.\nWorkdir: %s\nIts final reply:\n%s",
+		a.name, describe(a.cfg), a.status(), a.turns, dur(a.lastDur), a.dir, reply)
+	if n := len(a.pending); n > 0 {
+		text := strings.Join(a.pending, "\n\n")
+		a.pending = nil
+		if a.status() != "finished" {
+			// A stopped or failed turn doesn't get them: whoever stopped it should decide again.
+			report += fmt.Sprintf("\n\nIt did NOT get the %d message(s) queued for it, because its turn didn't finish. Send them again if they still apply.", n)
+		} else {
+			a.lines = append(a.lines, Line{Kind: "you", Text: text})
+			if err := a.start(text, "", nil, m.logPath(a)); err != nil {
+				report += "\n\nIts queued message(s) could not be delivered: " + err.Error()
+			} else {
+				report += fmt.Sprintf("\n\nIts %d queued message(s) were delivered: it's working on turn %d now.", n, a.turns)
+			}
+		}
+	}
+	m.toLead(report)
 }
 
 func (m *model) toLead(text string) {
@@ -278,13 +294,13 @@ func (m *model) submit() tea.Cmd {
 	}
 	if t := m.target; t != nil {
 		if t.running {
-			m.status = t.name + " is still running; message it when it's done"
-			return nil
-		}
-		t.lines = append(t.lines, Line{Kind: "you", Text: text})
-		if err := t.start(text, "", nil, m.logPath(t)); err != nil {
-			m.status = "could not start " + t.name + ": " + err.Error()
-			return nil
+			m.hold(t, "the user", text)
+		} else {
+			t.lines = append(t.lines, Line{Kind: "you", Text: text})
+			if err := t.start(text, "", nil, m.logPath(t)); err != nil {
+				m.status = "could not start " + t.name + ": " + err.Error()
+				return nil
+			}
 		}
 		m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user sent agent %q this message directly:\n%s", t.name, text))
 		m.target = nil

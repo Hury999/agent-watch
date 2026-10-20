@@ -20,7 +20,7 @@ Start an agent of one of those types; the brief goes on stdin:
     ...brief...
     BRIEF
 
-Send a follow-up to an agent that has finished its turn (same session, same workdir):
+Send an agent a message (same session, same workdir). If it's mid-turn, the message waits and starts its next turn as soon as the current one ends, so you can pass on news ("main moved") without stopping it:
 
     {{EXE}} send <name> <<'MSG'
     ...message...
