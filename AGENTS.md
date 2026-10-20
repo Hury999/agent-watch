@@ -1,0 +1,61 @@
+# Working on agent-watch
+
+A Go terminal app (Bubble Tea) where a **lead** agent puts coding **agents** to work and the user watches them all. Say "lead" and "agents", never "master"/"slave".
+
+## Commands
+
+```bash
+go vet ./... && go test ./...      # run both before every commit
+go build -o agent-watch .          # ~/.local/bin/aw links to this binary
+gofmt -l .                         # must print nothing
+```
+
+Go isn't on every PATH here; it may live in `/usr/local/go/bin`. Keep `go.mod`'s `go` line at the lowest version the dependencies need (now 1.24.2), not the toolchain's.
+
+## Map
+
+| File | What |
+|---|---|
+| `main.go` | flags (`-c`, `-r`, `-v`, `-h`); anything else goes to `cli` |
+| `config.go` | `Config`: the `Lead` (its own cli/account/model/effort) and the `Agents` list; colors; `accountKey` |
+| `agent.go` | `command` builds one turn for `claude` or `opencode`; `parse` turns their JSON output into `Line`s and a `Delta` (cost, tokens, Claude's limits) |
+| `run.go` | `agentState.start/stop`; the request files behind `aw spawn/send/stop`; `handle` validates them |
+| `tui.go` | the model, keys, mouse, layout, views |
+| `look.go` | colors, Claude Code style transcript (`⏺`, `⎿`), markdown via glamour, spinner, `panel` |
+| `setup.go` | the setup screen (`ctrl+s`) |
+| `usage.go` | header: Claude 5h/7d limits per account, opencode spend via `opencode stats` |
+| `persist.go` | `state.json` per run; `aw -c` / `aw -r` |
+| `lead.md` | the lead's instructions, embedded; `{{EXE}}`, `{{CWD}}`, `{{AGENTS}}` are filled in |
+| `testdata/` | real, sanitized output of both CLIs; parsers are tested against it |
+
+How a run works: the lead runs `aw spawn|send|stop` through its Bash tool. That writes `<run>/requests/<id>.json`; the TUI polls the folder, `handle`s it and writes `<id>.res`, which the command prints. When an agent's turn ends, the TUI queues an `[agent-watch] ...` message and starts the lead's next turn with it. Each turn is a fresh `claude -p --resume` / `opencode run --session` process.
+
+## Things that will bite you
+
+All of these were real bugs. Each has a test or a comment; keep both.
+
+- **opencode flags go after `run`.** `opencode --standalone run ...` prints help instead of running. `TestCommand` checks the subcommand comes first.
+- **opencode hangs on an open non-tty stdin.** Agent processes get no stdin (nil = /dev/null). Never give them the TUI's.
+- **opencode reads its directory from `$PWD`**, not the process cwd. `command` sets `PWD` to the workdir.
+- **opencode's shared background service keeps running a session after its client dies.** Stopping or timing out a default-account opencode turn must also call `session.interrupt` (`interrupt`). `--standalone` (another account) dies with its client.
+- **Signals and child processes:** agents run in their own process group (`Setpgid`) and are stopped with a signal to the group. That's why there's no Windows build.
+- **Session ids:** Claude wants a v4 UUID, opencode wants a `ses` prefix (`newSession`).
+- **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
+- **glamour's dark style keeps `##` before headings** and colors inline code red; `markdown` overrides both. The user cares how agent markdown looks.
+- **The lead has no edit tools on purpose** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent). Its job is to brief and verify, never to fix agents' code. Don't give it edit tools.
+
+## Keep compatible
+
+- The request JSON between `cli` and the TUI: a running TUI may be an older binary than the `aw` the lead calls.
+- `config.json` and `state.json`: users have them. Loading an older shape must keep working (see the v0.1.0 lead in `loadConfig`).
+
+## Style
+
+- Read the surrounding code and match it. Comments say why, in one line; most code has none.
+- The smallest change that fully works. No options or abstractions nobody asked for.
+- New logic gets a test. UI changes get looked at: the TUI can be driven in a pseudo-terminal and rendered to PNG to check what it really looks like.
+- Colors: the lead always uses the accent (`cAccent`); agents get `palette` colors by their place in the list, so editing an agent never recolors anything.
+
+## Releasing
+
+Push a version tag: `git tag v0.3.0 && git push origin v0.3.0`. `.github/workflows/release.yml` tests, builds Linux and macOS (amd64, arm64) with `-X main.version=<tag>`, and publishes the archives and `checksums.txt`.
