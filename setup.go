@@ -31,12 +31,9 @@ type field struct {
 
 func (f *setupForm) fields() []field {
 	c := &f.cfg
-	var names []string
-	for _, a := range c.Agents {
-		names = append(names, a.Name)
-	}
 	fs := []field{
-		{label: "agent", text: &c.Lead.Agent, choices: names, agent: -1},
+		{label: "cli", text: &c.Lead.CLI, choices: clis, agent: -1},
+		{label: "account", text: &c.Lead.Data, empty: "default", agent: -1},
 		{label: "model", text: &c.Lead.Model, empty: "default", agent: -1},
 		{label: "effort", text: &c.Lead.Effort, choices: efforts, agent: -1},
 	}
@@ -117,28 +114,20 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			*cur.text = cur.choices[(slices.Index(cur.choices, *cur.text)+step)%len(cur.choices)]
 		case editable && k.String() == " ":
-			f.edit(cur, *cur.text+" ")
+			*cur.text += " "
 		}
 	case "backspace":
 		if editable && *cur.text != "" {
 			r := []rune(*cur.text)
-			f.edit(cur, string(r[:len(r)-1]))
+			*cur.text = string(r[:len(r)-1])
 		}
 	default:
 		if editable && k.Type == tea.KeyRunes {
-			f.edit(cur, *cur.text+string(k.Runes))
+			*cur.text += string(k.Runes)
 		}
 	}
 	setColors(f.cfg)
 	return m, nil
-}
-
-// edit changes a text field; renaming the lead's agent keeps the lead pointing at it.
-func (f *setupForm) edit(fl field, v string) {
-	if fl.head && f.cfg.Lead.Agent == *fl.text {
-		f.cfg.Lead.Agent = v
-	}
-	*fl.text = v
 }
 
 func (f *setupForm) view(w, h int) string {
@@ -149,7 +138,7 @@ func (f *setupForm) view(w, h int) string {
 		if i == 0 {
 			lines = append(lines, sBold.Render("Lead")+sDim.Render(" · the agent you talk to"))
 		}
-		if i == 3 {
+		if i == 4 {
 			lines = append(lines, "", sBold.Render("Agents")+sDim.Render(" · who the lead can put to work"))
 		}
 		if fl.head {
@@ -170,7 +159,7 @@ func (f *setupForm) view(w, h int) string {
 			}
 			label := sBold.Render(c)
 			if i == 0 {
-				label = badge(c)
+				label = sAccent.Render(c) // the lead's color never changes
 			}
 			v = sDim.Render("‹ ") + label + sDim.Render(" ›")
 		case *fl.text == "":

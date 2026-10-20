@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -20,9 +21,10 @@ type Agent struct {
 	Enabled bool   `json:"enabled"` // the lead may start it
 }
 
-// Lead is the agent you talk to: one of the agents, with its own model and effort.
+// Lead is the agent you talk to. It stands on its own: changing the agents never touches it.
 type Lead struct {
-	Agent  string `json:"agent"`
+	CLI    string `json:"cli"`
+	Data   string `json:"data,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
 }
@@ -40,12 +42,12 @@ func defaultConfig() Config {
 	for _, cli := range clis {
 		_, err := exec.LookPath(cli)
 		c.Agents = append(c.Agents, Agent{Name: cli, CLI: cli, Enabled: err == nil})
-		if err == nil && c.Lead.Agent == "" {
-			c.Lead.Agent = cli
+		if err == nil && c.Lead.CLI == "" {
+			c.Lead.CLI = cli
 		}
 	}
-	if c.Lead.Agent == "" {
-		c.Lead.Agent = "claude"
+	if c.Lead.CLI == "" {
+		c.Lead.CLI = "claude"
 	}
 	return c
 }
@@ -64,6 +66,9 @@ func loadConfig() (Config, bool) {
 	b, err := os.ReadFile(configPath())
 	if err != nil || json.Unmarshal(b, &c) != nil || len(c.Agents) == 0 {
 		return defaultConfig(), false
+	}
+	if c.Lead.CLI == "" { // a v0.1.0 config pointed the lead at an agent instead
+		c.Lead.CLI = defaultConfig().Lead.CLI
 	}
 	return c, true
 }
@@ -86,14 +91,10 @@ func (c Config) find(name string) (Agent, bool) {
 	return Agent{}, false
 }
 
-// lead is the lead's agent with the lead's model and effort.
+// lead is the lead as an agent; its name is its CLI, which is how it's shown.
 func (c Config) lead() Agent {
-	a, ok := c.find(c.Lead.Agent)
-	if !ok && len(c.Agents) > 0 {
-		a = c.Agents[0]
-	}
-	a.Model, a.Effort = c.Lead.Model, c.Lead.Effort
-	return a
+	l := c.Lead
+	return Agent{Name: l.CLI, CLI: l.CLI, Data: l.Data, Model: l.Model, Effort: l.Effort}
 }
 
 // enabled returns the agent the lead may start under this name.
@@ -114,8 +115,8 @@ func (c Config) check() string {
 		}
 		seen[a.Name] = true
 	}
-	if !seen[c.Lead.Agent] {
-		return "the lead's agent " + c.Lead.Agent + " doesn't exist"
+	if !slices.Contains(clis, c.Lead.CLI) {
+		return "the lead's cli must be claude or opencode"
 	}
 	return ""
 }
@@ -145,18 +146,16 @@ func expand(p string) string {
 
 var palette = []lipgloss.Color{cBlue, cPurple, cGreen, cYellow, lipgloss.Color("#F778BA"), lipgloss.Color("#56D4DD")}
 
-// agentColors gives each configured agent its own color: the first Claude agent gets Claude's clay.
+// agentColors gives each agent the color of its place in the list, so editing an agent never recolors
+// anything. The lead always has the accent color.
 var agentColors = map[string]lipgloss.Color{}
 
 func setColors(c Config) {
 	clear(agentColors)
-	clay, next := false, 0
-	for _, a := range c.Agents {
-		if a.CLI == "claude" && !clay {
-			agentColors[a.Name], clay = cAccent, true
-			continue
-		}
-		agentColors[a.Name] = palette[next%len(palette)]
-		next++
+	for i, a := range c.Agents {
+		agentColors[a.Name] = palette[i%len(palette)]
 	}
 }
+
+// account identifies the login an agent uses: agents on the same one share its limits and spend.
+func accountKey(a Agent) string { return a.CLI + "\x00" + expand(a.Data) }

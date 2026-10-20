@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -111,21 +112,43 @@ func TestCommand(t *testing.T) {
 }
 
 func TestConfigCheck(t *testing.T) {
-	ok := Config{Lead: Lead{Agent: "claude"}, Agents: []Agent{{Name: "claude", CLI: "claude"}, {Name: "work", CLI: "opencode"}}}
+	ok := Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{{Name: "claude", CLI: "claude"}, {Name: "work", CLI: "opencode"}}}
 	if e := ok.check(); e != "" {
 		t.Errorf("valid config: %s", e)
 	}
 	for _, bad := range []Config{
-		{Lead: Lead{Agent: "gone"}, Agents: ok.Agents},
-		{Lead: Lead{Agent: "claude"}, Agents: append(slices.Clone(ok.Agents), Agent{Name: "work", CLI: "claude"})},
-		{Lead: Lead{Agent: "claude"}, Agents: append(slices.Clone(ok.Agents), Agent{Name: "Bad Name", CLI: "claude"})},
+		{Lead: Lead{CLI: "gpt"}, Agents: ok.Agents},
+		{Lead: Lead{CLI: "claude"}, Agents: append(slices.Clone(ok.Agents), Agent{Name: "work", CLI: "claude"})},
+		{Lead: Lead{CLI: "claude"}, Agents: append(slices.Clone(ok.Agents), Agent{Name: "Bad Name", CLI: "claude"})},
 	} {
 		if bad.check() == "" {
 			t.Errorf("%+v passed the check", bad)
 		}
 	}
-	if l := ok.lead(); l.Name != "claude" || l.CLI != "claude" {
-		t.Errorf("lead() = %+v", l)
+}
+
+// Editing an agent in the setup must not touch the lead, or recolor anything.
+func TestSetupEditsLeaveLeadAlone(t *testing.T) {
+	cfg := Config{Lead: Lead{CLI: "claude", Model: "opus"},
+		Agents: []Agent{{Name: "claude", CLI: "claude"}, {Name: "work", CLI: "opencode"}}}
+	setColors(cfg)
+	before := agentColors["work"]
+	m := &model{cfg: cfg, setup: &setupForm{cfg: cfg}}
+	fs := m.setup.fields()
+	nameRow := slices.IndexFunc(fs, func(f field) bool { return f.head })
+	m.setup.row = nameRow
+	m.setupKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}) // rename the first agent
+	m.setup.row = nameRow + 1
+	m.setupKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}) // and switch its cli
+	got := m.setup.cfg
+	if got.Agents[0].Name != "claudex" || got.Agents[0].CLI != "opencode" {
+		t.Fatalf("the edits didn't land: %+v", got.Agents[0])
+	}
+	if got.Lead != cfg.Lead {
+		t.Errorf("editing an agent changed the lead: %+v", got.Lead)
+	}
+	if agentColors["work"] != before {
+		t.Errorf("editing the first agent recolored the second")
 	}
 }
 

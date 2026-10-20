@@ -31,7 +31,7 @@ type model struct {
 	mvp, svp         viewport.Model
 	w, h             int
 	status           string
-	limits           map[string]*Limits // per Claude agent: its account's rate limit windows, from its latest turn
+	limits           map[string]*Limits // per Claude account (accountKey): its rate limit windows, from its latest turn
 	spend            map[string]spend
 	spendAt          time.Time
 	dirty            bool // the run changed since it was last saved
@@ -109,7 +109,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cost, a.turnCost = a.cost+d.Cost, a.turnCost+d.Cost
 		a.in, a.out, a.turnIn, a.turnOut = a.in+d.In, a.out+d.Out, a.turnIn+d.In, a.turnOut+d.Out
 		if d.Limits != nil {
-			m.limits[a.cfg.Name] = d.Limits
+			m.limits[accountKey(a.cfg)] = d.Limits
 		}
 		for _, l := range msg.lines {
 			switch l.Kind {
@@ -129,7 +129,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case spendMsg:
 		if msg.ok {
-			m.spend[msg.agent] = msg.s
+			m.spend[msg.account] = msg.s
 		}
 	case stopMsg:
 		msg.a.stop(msg.reason)
@@ -462,7 +462,11 @@ func statusLine(a *agentState, idle string) string {
 }
 
 func agentTitle(a *agentState, name string) string {
-	return name + sDim.Render(" · ") + badge(a.cfg.Name) + " " + sDim.Render(strings.TrimPrefix(describe(a.cfg), a.cfg.Name+" "))
+	who := badge(a.cfg.Name)
+	if a.name == "lead" {
+		who = sAccent.Render(a.cfg.Name) // the lead's color never changes
+	}
+	return name + sDim.Render(" · ") + who + " " + sDim.Render(strings.TrimPrefix(describe(a.cfg), a.cfg.Name+" "))
 }
 
 func (m *model) workerRows(w int) string {

@@ -39,7 +39,7 @@ cd ~/code/my-project
 aw
 ```
 
-**4. Pick your agents.** The first launch opens the setup: choose the lead (agent, model, effort) and which agents it may put to work, then `enter`. Change it any time with `ctrl+s`.
+**4. Pick your agents.** The first launch opens the setup: choose the lead (cli, account, model, effort) and which agents it may put to work, then `enter`. Change it any time with `ctrl+s`.
 
 **5. Talk to the lead** like you would to Claude Code:
 
@@ -67,7 +67,7 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 | model, effort | empty for the CLI's default. Claude: `sonnet`, `opus`, `haiku`, `fable` or an id. opencode: `provider/model`, see `opencode models`; effort is the model's variant. |
 | lead may use it | whether the lead can put it to work |
 
-The lead is one of these agents with its own model and effort. The setup is saved to `~/.config/agent-watch/config.json`.
+The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. The setup is saved to `~/.config/agent-watch/config.json`.
 
 ## Keys
 

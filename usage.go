@@ -19,9 +19,9 @@ type spend struct {
 }
 
 type spendMsg struct {
-	agent string
-	s     spend
-	ok    bool
+	account string // accountKey
+	s       spend
+	ok      bool
 }
 
 func opencodeCost(a Agent, days int) (float64, error) {
@@ -41,25 +41,36 @@ func fetchSpend(a Agent) tea.Cmd {
 	return func() tea.Msg {
 		today, err1 := opencodeCost(a, 0)
 		week, err2 := opencodeCost(a, 7)
-		return spendMsg{a.Name, spend{today, week}, err1 == nil && err2 == nil}
+		return spendMsg{accountKey(a), spend{today, week}, err1 == nil && err2 == nil}
 	}
 }
 
-// usedAgents are the agents the current setup can run: the lead's and the enabled ones.
-func (m *model) usedAgents() []Agent {
+// usedAccounts are the logins the current setup can use, once each: the enabled agents' and the lead's.
+// Each is labeled with the first agent on it, or "lead".
+func (m *model) usedAccounts() []Agent {
 	var used []Agent
-	for _, a := range m.cfg.Agents {
-		if a.Enabled || a.Name == m.cfg.Lead.Agent {
+	seen := map[string]bool{}
+	add := func(a Agent) {
+		if !seen[accountKey(a)] {
+			seen[accountKey(a)] = true
 			used = append(used, a)
 		}
 	}
+	for _, a := range m.cfg.Agents {
+		if a.Enabled {
+			add(a)
+		}
+	}
+	lead := m.cfg.lead()
+	lead.Name = "lead"
+	add(lead)
 	return used
 }
 
 func (m *model) refreshSpend() tea.Cmd {
 	m.spendAt = time.Now()
 	var cmds []tea.Cmd
-	for _, a := range m.usedAgents() {
+	for _, a := range m.usedAccounts() {
 		if a.CLI == "opencode" {
 			cmds = append(cmds, fetchSpend(a))
 		}
@@ -67,13 +78,17 @@ func (m *model) refreshSpend() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// usageLine is the header's right side: one group per agent in use.
+// usageLine is the header's right side: one group per account in use.
 func (m *model) usageLine() string {
 	var parts []string
-	for _, a := range m.usedAgents() {
+	for _, a := range m.usedAccounts() {
 		label := badge(a.Name) + " "
+		if a.Name == "lead" {
+			label = sAccent.Render("lead") + " "
+		}
+		key := accountKey(a)
 		if a.CLI == "claude" {
-			if l := m.limits[a.Name]; l != nil {
+			if l := m.limits[key]; l != nil {
 				reset := ""
 				if l.FiveReset > 0 {
 					reset = sDim.Render(" ↻" + dur(time.Until(time.Unix(l.FiveReset, 0)).Round(time.Minute)))
@@ -84,7 +99,7 @@ func (m *model) usageLine() string {
 			}
 			continue
 		}
-		if s, ok := m.spend[a.Name]; ok {
+		if s, ok := m.spend[key]; ok {
 			parts = append(parts, label+sDim.Render("today ")+sBold.Render(fmt.Sprintf("$%.2f", s.today))+sDim.Render(" · 7d ")+sBold.Render(fmt.Sprintf("$%.2f", s.week)))
 		} else {
 			parts = append(parts, label+sDim.Render("…"))
