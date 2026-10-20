@@ -1,6 +1,6 @@
 package main
 
-// Running agents, and the request files through which the master's `agent-watch spawn|send|stop` reach the TUI.
+// Running agents, and the request files through which the lead's `agent-watch spawn|send|stop` reach the TUI.
 
 import (
 	"bufio"
@@ -21,8 +21,8 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
-//go:embed master.md
-var masterPrompt string
+//go:embed lead.md
+var leadPrompt string
 
 const turnTimeout = 45 * time.Minute
 
@@ -99,7 +99,7 @@ func (a *agentState) start(prompt, system string, env []string, logPath string) 
 		sc.Buffer(make([]byte, 64*1024), 64<<20)
 		for sc.Scan() {
 			fmt.Fprintf(log, "%s\n", sc.Bytes())
-			if lines, d := parse(a.cfg.Agent, sc.Bytes()); len(lines) > 0 || d != (Delta{}) {
+			if lines, d := parse(a.cfg.CLI, sc.Bytes()); len(lines) > 0 || d != (Delta{}) {
 				prog.Send(linesMsg{a, lines, d})
 			}
 		}
@@ -145,29 +145,29 @@ type request struct {
 
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
-// handle runs one request from the master and returns the answer its command prints.
+// handle runs one request from the lead and returns the answer its command prints.
 func (m *model) handle(r request) string {
 	a := m.find(r.Name)
 	switch r.Op {
 	case "spawn":
-		cfg, ok := m.cfg.slave(r.Agent)
+		cfg, ok := m.cfg.enabled(r.Agent)
 		switch {
 		case !validName.MatchString(r.Name):
 			return "error: the name must be lowercase letters, digits and dashes"
 		case a != nil:
-			return "error: slave " + r.Name + " already exists; use send for a follow-up, or pick a new name"
+			return "error: agent " + r.Name + " already exists; use send for a follow-up, or pick a new name"
 		case !ok:
-			return "error: " + r.Agent + " is not an enabled slave. Enabled: " + strings.Join(m.enabled(), ", ")
+			return "error: " + r.Agent + " is not an enabled agent. Enabled: " + strings.Join(m.enabled(), ", ")
 		case !isDir(r.Dir):
 			return "error: workdir is not a directory: " + r.Dir
 		case strings.TrimSpace(r.Prompt) == "":
 			return "error: the brief on stdin is empty"
 		}
-		a = &agentState{name: r.Name, dir: r.Dir, cfg: cfg, session: newSession(cfg.Agent)}
+		a = &agentState{name: r.Name, dir: r.Dir, cfg: cfg, session: newSession(cfg.CLI)}
 	case "send":
 		switch {
 		case a == nil:
-			return "error: no slave named " + r.Name
+			return "error: no agent named " + r.Name
 		case a.running:
 			return "error: " + r.Name + " is still running; wait for its [agent-watch] message"
 		case strings.TrimSpace(r.Prompt) == "":
@@ -177,17 +177,18 @@ func (m *model) handle(r request) string {
 		if a == nil || !a.running {
 			return "error: " + r.Name + " is not running"
 		}
-		a.stop("stopped by the master")
+		a.stop("stopped by the lead")
 		return "ok: stopping " + r.Name
 	default:
 		return "error: unknown request " + r.Op
 	}
-	a.lines = append(a.lines, Line{Kind: "you", Text: "from master:\n" + strings.TrimSpace(r.Prompt)})
+	a.lines = append(a.lines, Line{Kind: "you", Text: "from the lead:\n" + strings.TrimSpace(r.Prompt)})
+	m.dirty = true
 	if err := a.start(r.Prompt, "", nil, m.logPath(a)); err != nil {
 		return "error: could not start " + r.Name + ": " + err.Error()
 	}
 	if r.Op == "spawn" {
-		m.slaves = append(m.slaves, a)
+		m.workers = append(m.workers, a)
 		m.layout()
 	}
 	return fmt.Sprintf("ok: %s turn %d started on %s. You get an [agent-watch] message when it finishes; end your turn now instead of waiting.",
@@ -209,12 +210,12 @@ func (m *model) pollRequests() bool {
 	return len(files) > 0
 }
 
-const usage = `usage: agent-watch                                open the TUI
-       agent-watch spawn <name> <agent> <workdir> < brief
+const usage = `usage: agent-watch                                open the TUI (see agent-watch -h)
+       agent-watch spawn <name> <type> <workdir> < brief
        agent-watch send <name> < message
        agent-watch stop <name>`
 
-// cli is the master's side: it hands a request to the running TUI and prints the answer.
+// cli is the lead's side: it hands a request to the running TUI and prints the answer.
 func cli(args []string) int {
 	var r request
 	switch {
@@ -228,7 +229,7 @@ func cli(args []string) int {
 	}
 	dir := os.Getenv("AGENT_WATCH_DIR")
 	if dir == "" {
-		fmt.Fprintln(os.Stderr, "agent-watch: only the master inside agent-watch can run this (AGENT_WATCH_DIR is not set)")
+		fmt.Fprintln(os.Stderr, "agent-watch: only the lead inside agent-watch can run this (AGENT_WATCH_DIR is not set)")
 		return 2
 	}
 	if r.Op != "stop" {

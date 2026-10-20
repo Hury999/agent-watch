@@ -17,23 +17,25 @@ import (
 type model struct {
 	cfg              Config
 	runDir, cwd, exe string
-	master           *agentState
-	slaves           []*agentState
+	lead             *agentState
+	workers          []*agentState
 	sel              int
-	queue            []string    // messages for the master's next turn
-	notes            []string    // told to the master along with its next message
-	focusList        bool        // keys go to the slave list instead of the input
-	target           *agentState // the slave the input is messaging (m); nil = master
-	full             bool        // selected slave fullscreen
+	queue            []string    // messages for the lead's next turn
+	notes            []string    // told to the lead along with its next message
+	focusList        bool        // keys go to the agent list instead of the input
+	target           *agentState // the agent the input is messaging (m); nil = the lead
+	full             bool        // selected agent fullscreen
 	quitArmed        bool
 	setup            *setupForm
 	input            textinput.Model
 	mvp, svp         viewport.Model
 	w, h             int
 	status           string
-	limits           *Limits // Claude's rate limit windows, from the latest claude turn
+	limits           map[string]*Limits // per Claude agent: its account's rate limit windows, from its latest turn
 	spend            map[string]spend
 	spendAt          time.Time
+	dirty            bool // the run changed since it was last saved
+	savedAt          time.Time
 }
 
 type tickMsg struct{}
@@ -42,13 +44,16 @@ func tick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func runTUI() error {
+// runTUI opens a new run, or continues the saved one in resume.
+func runTUI(resume string) error {
 	cfg, saved := loadConfig()
+	setColors(cfg)
 	cwd, _ := os.Getwd()
 	exe, _ := os.Executable()
-	home, _ := os.UserHomeDir()
-	// shortcut: every launch is a fresh run (no resuming the master or slaves), add resume if wanted.
-	runDir := filepath.Join(home, ".local", "state", "agent-watch", time.Now().Format("20060102-150405"))
+	runDir := filepath.Join(stateDir(), time.Now().Format("20060102-150405"))
+	if resume != "" {
+		runDir = resume
+	}
 	if err := os.MkdirAll(filepath.Join(runDir, "requests"), 0o755); err != nil {
 		return err
 	}
@@ -56,10 +61,21 @@ func runTUI() error {
 	in.Prompt = sAccent.Render("> ")
 	in.PlaceholderStyle = sDim
 	in.Cursor.Style = sAccent
-	in.Placeholder = "message the master…"
+	in.Placeholder = "message the lead…"
 	in.Focus()
-	m := &model{cfg: cfg, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{},
-		master: &agentState{name: "master", dir: cwd, cfg: cfg.Master, session: newSession(cfg.Master.Agent)}}
+	m := &model{cfg: cfg, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{},
+		lead: &agentState{name: "lead", dir: cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI)}}
+	if resume != "" {
+		r, err := loadRun(resume)
+		if err != nil {
+			return err
+		}
+		m.lead, m.notes = r.Lead.restore(), r.Notes
+		for _, a := range r.Agents {
+			m.workers = append(m.workers, a.restore())
+		}
+		m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "resumed the run from " + r.Saved.Format("Jan 02 15:04")})
+	}
 	if !saved {
 		m.setup = &setupForm{cfg: cfg}
 	}
@@ -76,6 +92,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		m.layout()
 	case tickMsg:
+		if m.dirty && time.Since(m.savedAt) > 2*time.Second {
+			m.saveRun()
+		}
 		if m.pollRequests() {
 			m.refresh()
 		}
@@ -84,12 +103,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tick()
 	case linesMsg:
+		m.dirty = true
 		a, d := msg.a, msg.d
 		a.lines = append(a.lines, msg.lines...)
 		a.cost, a.turnCost = a.cost+d.Cost, a.turnCost+d.Cost
 		a.in, a.out, a.turnIn, a.turnOut = a.in+d.In, a.out+d.Out, a.turnIn+d.In, a.turnOut+d.Out
 		if d.Limits != nil {
-			m.limits = d.Limits
+			m.limits[a.cfg.Name] = d.Limits
 		}
 		for _, l := range msg.lines {
 			switch l.Kind {
@@ -101,14 +121,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 	case doneMsg:
+		m.dirty = true
 		m.finished(msg.a, msg.code)
 		m.refresh()
-		if strings.HasPrefix(msg.a.cfg.Agent, "opencode") {
-			return m, fetchSpend(msg.a.cfg.Agent)
+		if msg.a.cfg.CLI == "opencode" {
+			return m, fetchSpend(msg.a.cfg)
 		}
 	case spendMsg:
 		if msg.ok {
-			m.spend[msg.kind] = msg.s
+			m.spend[msg.agent] = msg.s
 		}
 	case stopMsg:
 		msg.a.stop(msg.reason)
@@ -134,47 +155,47 @@ func (m *model) finished(a *agentState, code int) {
 	} else {
 		a.lines = append(a.lines, Line{Kind: "fail", Text: fmt.Sprintf("turn %d %s · %s", a.turns, a.status(), turnSummary(a))})
 	}
-	if a == m.master {
-		m.flushMaster()
+	if a == m.lead {
+		m.flushLead()
 		return
 	}
 	reply := clip(a.lastText, 8000)
 	if reply == "" {
 		reply = "(no reply)"
 	}
-	m.master.lines = append(m.master.lines, Line{Kind: "info", Text: fmt.Sprintf("slave %s %s turn %d in %s", a.name, a.status(), a.turns, dur(a.lastDur))})
-	m.toMaster(fmt.Sprintf("[agent-watch] Slave %q (%s) %s on turn %d after %s.\nWorkdir: %s\nIts final reply:\n%s",
+	m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: fmt.Sprintf("agent %s %s turn %d in %s", a.name, a.status(), a.turns, dur(a.lastDur))})
+	m.toLead(fmt.Sprintf("[agent-watch] Agent %q (%s) %s on turn %d after %s.\nWorkdir: %s\nIts final reply:\n%s",
 		a.name, describe(a.cfg), a.status(), a.turns, dur(a.lastDur), a.dir, reply))
 }
 
-func (m *model) toMaster(text string) {
+func (m *model) toLead(text string) {
 	m.queue = append(m.queue, text)
-	m.flushMaster()
+	m.flushLead()
 }
 
-// flushMaster starts the master's next turn with everything queued, unless it is busy.
-func (m *model) flushMaster() {
-	if m.master.running || len(m.queue) == 0 {
+// flushLead starts the lead's next turn with everything queued, unless it is busy.
+func (m *model) flushLead() {
+	if m.lead.running || len(m.queue) == 0 {
 		return
 	}
 	msg := strings.Join(append(m.notes, m.queue...), "\n\n")
 	m.notes, m.queue = nil, nil
-	if err := m.master.start(msg, m.systemPrompt(), []string{"AGENT_WATCH_DIR=" + m.runDir}, m.logPath(m.master)); err != nil {
-		m.master.lines = append(m.master.lines, Line{Kind: "fail", Text: "could not start the master: " + err.Error()})
+	if err := m.lead.start(msg, m.systemPrompt(), []string{"AGENT_WATCH_DIR=" + m.runDir}, m.logPath(m.lead)); err != nil {
+		m.lead.lines = append(m.lead.lines, Line{Kind: "fail", Text: "could not start the lead: " + err.Error()})
 	}
 }
 
 func (m *model) systemPrompt() string {
 	var s []string
-	for _, a := range m.cfg.Slaves {
+	for _, a := range m.cfg.Agents {
 		if a.Enabled {
-			s = append(s, "- "+a.Agent+" (runs "+describe(a)+")")
+			s = append(s, "- "+a.Name+" ("+a.CLI+", runs "+strings.TrimPrefix(describe(a), a.Name+" ")+")")
 		}
 	}
 	if len(s) == 0 {
-		s = []string{"- none enabled: tell the user to enable slaves in the setup (ctrl+s)"}
+		s = []string{"- none enabled: tell the user to enable agents in the setup (ctrl+s)"}
 	}
-	return strings.NewReplacer("{{EXE}}", m.exe, "{{CWD}}", m.cwd, "{{SLAVES}}", strings.Join(s, "\n")).Replace(masterPrompt)
+	return strings.NewReplacer("{{EXE}}", m.exe, "{{CWD}}", m.cwd, "{{AGENTS}}", strings.Join(s, "\n")).Replace(leadPrompt)
 }
 
 func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -192,8 +213,13 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "agents are running: ctrl+c again stops them and quits"
 			return m, nil
 		}
-		for _, a := range append(m.slaves, m.master) {
+		for _, a := range append(m.workers, m.lead) {
 			a.stop("stopped: agent-watch quit")
+		}
+		if m.lead.turns == 0 && len(m.workers) == 0 {
+			os.RemoveAll(m.runDir) // nothing happened: don't list an empty run in aw -r
+		} else {
+			m.saveRun()
 		}
 		return m, tea.Quit
 	case "ctrl+s":
@@ -217,12 +243,12 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.focusList {
-		s := m.slaves[m.sel]
+		s := m.workers[m.sel]
 		switch k.String() {
 		case "up", "k":
-			m.selectSlave(m.sel - 1)
+			m.selectWorker(m.sel - 1)
 		case "down", "j":
-			m.selectSlave(m.sel + 1)
+			m.selectWorker(m.sel + 1)
 		case "enter":
 			m.full = !m.full
 			m.layout()
@@ -244,7 +270,7 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// submit sends the input to the master, or to the slave being messaged.
+// submit sends the input to the lead, or to the agent being messaged.
 func (m *model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
@@ -260,15 +286,16 @@ func (m *model) submit() tea.Cmd {
 			m.status = "could not start " + t.name + ": " + err.Error()
 			return nil
 		}
-		m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user sent slave %q this message directly:\n%s", t.name, text))
+		m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user sent agent %q this message directly:\n%s", t.name, text))
 		m.target = nil
 		m.setFocusList(false)
 	} else {
-		m.master.lines = append(m.master.lines, Line{Kind: "you", Text: text})
-		if m.master.running {
-			m.master.lines = append(m.master.lines, Line{Kind: "info", Text: "queued until the master's turn ends"})
+		m.lead.lines = append(m.lead.lines, Line{Kind: "you", Text: text})
+		if m.lead.running {
+			m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "queued until the lead's turn ends"})
 		}
-		m.toMaster(text)
+		m.toLead(text)
+		m.dirty = true
 	}
 	m.input.SetValue("")
 	m.refresh()
@@ -276,10 +303,10 @@ func (m *model) submit() tea.Cmd {
 }
 
 func (m *model) setFocusList(on bool) {
-	m.focusList = on && len(m.slaves) > 0
-	m.input.Placeholder = "message the master…"
+	m.focusList = on && len(m.workers) > 0
+	m.input.Placeholder = "message the lead…"
 	if m.target != nil {
-		m.input.Placeholder = "message slave " + m.target.name + " directly…  (esc cancels)"
+		m.input.Placeholder = "message agent " + m.target.name + " directly…  (esc cancels)"
 	}
 	if m.focusList {
 		m.input.Blur()
@@ -288,8 +315,8 @@ func (m *model) setFocusList(on bool) {
 	}
 }
 
-func (m *model) selectSlave(i int) {
-	if i < 0 || i >= len(m.slaves) || i == m.sel {
+func (m *model) selectWorker(i int) {
+	if i < 0 || i >= len(m.workers) || i == m.sel {
 		return
 	}
 	m.sel = i
@@ -300,7 +327,7 @@ func (m *model) selectSlave(i int) {
 // geometry of the main screen, shared by View and mouse hit-testing.
 func (m *model) bodyH() int    { return m.h - 5 } // header (1), input box (3), footer (1)
 func (m *model) leftW() int    { return m.w * 55 / 100 }
-func (m *model) listRows() int { return max(1, min(len(m.slaves), 8)) }
+func (m *model) listRows() int { return max(1, min(len(m.workers), 8)) }
 func (m *model) listH() int    { return m.listRows() + 2 }
 func (m *model) listStart() int {
 	return max(m.sel-m.listRows()+1, 0)
@@ -326,12 +353,12 @@ func (m *model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	case e.Action != tea.MouseActionPress || e.Button != tea.MouseButtonLeft:
 	case inList:
-		if i := m.listStart() + e.Y - 2; e.Y >= 2 && i < len(m.slaves) {
+		if i := m.listStart() + e.Y - 2; e.Y >= 2 && i < len(m.workers) {
 			if i == m.sel && m.focusList {
-				m.full = true // a click on the selected slave opens it fullscreen
+				m.full = true // a click on the selected agent opens it fullscreen
 				m.layout()
 			}
-			m.selectSlave(i)
+			m.selectWorker(i)
 		}
 		m.setFocusList(true)
 	case m.full && e.Y == 1:
@@ -346,7 +373,7 @@ func (m *model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) running() bool {
-	for _, a := range append(m.slaves, m.master) {
+	for _, a := range append(m.workers, m.lead) {
 		if a.running {
 			return true
 		}
@@ -355,7 +382,7 @@ func (m *model) running() bool {
 }
 
 func (m *model) find(name string) *agentState {
-	for _, a := range m.slaves {
+	for _, a := range m.workers {
 		if a.name == name {
 			return a
 		}
@@ -365,9 +392,9 @@ func (m *model) find(name string) *agentState {
 
 func (m *model) enabled() []string {
 	var names []string
-	for _, a := range m.cfg.Slaves {
+	for _, a := range m.cfg.Agents {
 		if a.Enabled {
-			names = append(names, a.Agent)
+			names = append(names, a.Name)
 		}
 	}
 	return names
@@ -389,9 +416,9 @@ func (m *model) layout() {
 }
 
 func (m *model) refresh() {
-	setContent(&m.mvp, m.master.lines)
-	if len(m.slaves) > 0 {
-		setContent(&m.svp, m.slaves[m.sel].lines)
+	setContent(&m.mvp, m.lead.lines)
+	if len(m.workers) > 0 {
+		setContent(&m.svp, m.workers[m.sel].lines)
 	}
 }
 
@@ -435,16 +462,16 @@ func statusLine(a *agentState, idle string) string {
 }
 
 func agentTitle(a *agentState, name string) string {
-	return name + sDim.Render(" · ") + badge(a.cfg.Agent) + " " + sDim.Render(strings.TrimPrefix(describe(a.cfg), a.cfg.Agent+" "))
+	return name + sDim.Render(" · ") + badge(a.cfg.Name) + " " + sDim.Render(strings.TrimPrefix(describe(a.cfg), a.cfg.Name+" "))
 }
 
-func (m *model) slaveRows(w int) string {
-	if len(m.slaves) == 0 {
-		return sDim.Render("none yet · the master starts them")
+func (m *model) workerRows(w int) string {
+	if len(m.workers) == 0 {
+		return sDim.Render("none yet · the lead starts them")
 	}
 	var rows []string
-	for i := m.listStart(); i < m.listStart()+m.listRows() && i < len(m.slaves); i++ {
-		s := m.slaves[i]
+	for i := m.listStart(); i < m.listStart()+m.listRows() && i < len(m.workers); i++ {
+		s := m.workers[i]
 		took := s.totalDur
 		if s.running {
 			took += time.Since(s.started)
@@ -452,7 +479,7 @@ func (m *model) slaveRows(w int) string {
 		model := s.cfg.Model[strings.LastIndex(s.cfg.Model, "/")+1:]
 		row := icon(s) + " " +
 			sBold.Render(fmt.Sprintf("%-12s", clip(s.name, 12))) + " " +
-			lipgloss.NewStyle().Foreground(kindColor(s.cfg.Agent)).Render(fmt.Sprintf("%-17s", s.cfg.Agent)) + " " +
+			lipgloss.NewStyle().Foreground(agentColors[s.cfg.Name]).Render(fmt.Sprintf("%-17s", clip(s.cfg.Name, 17))) + " " +
 			sDim.Render(fmt.Sprintf("%7s  ↓%-6s $%.3f  %s", dur(took), tokens(s.out), s.cost, model))
 		row = xansi.Truncate(row, w, "…")
 		if i == m.sel {
@@ -483,8 +510,8 @@ func (m *model) footer() string {
 	if m.status != "" {
 		return sYellow.Render(xansi.Truncate(" "+m.status, m.w, "…"))
 	}
-	keys := [][2]string{{"enter", "send"}, {"tab", "slaves"}, {"click", "select"}, {"m", "message slave"},
-		{"x", "stop slave"}, {"⏎/click", "fullscreen"}, {"wheel", "scroll"}, {"esc", "back"}, {"^s", "setup"}, {"^c", "quit"}}
+	keys := [][2]string{{"enter", "send"}, {"tab", "agents"}, {"click", "select"}, {"m", "message agent"},
+		{"x", "stop agent"}, {"⏎/click", "fullscreen"}, {"wheel", "scroll"}, {"esc", "back"}, {"^s", "setup"}, {"^c", "quit"}}
 	var parts []string
 	for _, k := range keys {
 		parts = append(parts, sAccent.Render(k[0])+" "+sDim.Render(k[1]))
@@ -502,26 +529,26 @@ func (m *model) View() string {
 	bodyH := m.bodyH()
 	var body string
 	if m.full {
-		s := m.slaves[m.sel]
+		s := m.workers[m.sel]
 		t := icon(s) + " " + agentTitle(s, sBold.Render(s.name)) + sDim.Render(" · esc or click here to close")
 		body = panel(t, m.svp.View()+"\n"+statusLine(s, ""), m.w, bodyH, true)
 	} else {
 		lw := m.leftW()
-		mt := sAccent.Render("✻ ") + agentTitle(m.master, sBold.Render("Master"))
-		left := panel(mt, m.mvp.View()+"\n"+statusLine(m.master, "type below to talk to the master"), lw, bodyH, !m.focusList)
+		mt := sAccent.Render("✻ ") + agentTitle(m.lead, sBold.Render("Lead"))
+		left := panel(mt, m.mvp.View()+"\n"+statusLine(m.lead, "type below to talk to the lead"), lw, bodyH, !m.focusList)
 		run, done := 0, 0
-		for _, s := range m.slaves {
+		for _, s := range m.workers {
 			if s.running {
 				run++
 			} else if s.turns > 0 {
 				done++
 			}
 		}
-		lt := sBold.Render("Slaves") + sDim.Render(fmt.Sprintf(" · %d running · %d done", run, done))
-		list := panel(lt, m.slaveRows(m.w-lw-4), m.w-lw, m.listH(), m.focusList)
-		detail := panel(sDim.Render("no slave selected"), "", m.w-lw, bodyH-m.listH(), false)
-		if len(m.slaves) > 0 {
-			s := m.slaves[m.sel]
+		lt := sBold.Render("Agents") + sDim.Render(fmt.Sprintf(" · %d running · %d done", run, done))
+		list := panel(lt, m.workerRows(m.w-lw-4), m.w-lw, m.listH(), m.focusList)
+		detail := panel(sDim.Render("no agent selected"), "", m.w-lw, bodyH-m.listH(), false)
+		if len(m.workers) > 0 {
+			s := m.workers[m.sel]
 			detail = panel(icon(s)+" "+agentTitle(s, sBold.Render(s.name)), m.svp.View()+"\n"+statusLine(s, ""), m.w-lw, bodyH-m.listH(), m.focusList)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, lipgloss.JoinVertical(lipgloss.Left, list, detail))

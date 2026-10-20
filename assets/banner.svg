@@ -16,5 +16,5 @@
     <circle cx="326" cy="404" r="20" fill="#D97757"/>
   </g>
   <text x="320" y="160" font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="92" font-weight="700" fill="#E6E6E6">agent<tspan fill="#D97757">-</tspan>watch</text>
-  <text x="324" y="222" font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="30" fill="#8A8A8A">one master, many agents, all in view</text>
+  <text x="324" y="222" font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="30" fill="#8A8A8A">one lead, many agents, all in view</text>
 </svg>

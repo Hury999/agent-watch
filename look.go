@@ -36,19 +36,8 @@ var (
 	sYellow = lipgloss.NewStyle().Foreground(cYellow)
 )
 
-// kindColor gives every agent kind its own color.
-func kindColor(kind string) lipgloss.Color {
-	switch kind {
-	case "claude":
-		return cAccent
-	case "opencode-decomp":
-		return cBlue
-	}
-	return cPurple
-}
-
-func badge(kind string) string {
-	return lipgloss.NewStyle().Foreground(kindColor(kind)).Render(kind)
+func badge(name string) string {
+	return lipgloss.NewStyle().Foreground(agentColors[name]).Render(name)
 }
 
 var spinFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"}

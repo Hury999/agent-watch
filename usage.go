@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,18 +19,15 @@ type spend struct {
 }
 
 type spendMsg struct {
-	kind string
-	s    spend
-	ok   bool
+	agent string
+	s     spend
+	ok    bool
 }
 
-func opencodeCost(kind string, days int) (float64, error) {
-	cmd := exec.Command("opencode", "stats", "--json", "--days", fmt.Sprint(days))
-	if kind == "opencode-personal" {
-		home, _ := os.UserHomeDir()
-		cmd.Env = append(os.Environ(), "OPENCODE_DB="+filepath.Join(home, ".local/share/opencode/personal.db"))
-		cmd.Args = append(cmd.Args, "--standalone")
-	}
+func opencodeCost(a Agent, days int) (float64, error) {
+	env, args := account(a)
+	cmd := exec.Command("opencode", append([]string{"stats", "--json", "--days", fmt.Sprint(days)}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
@@ -41,47 +37,43 @@ func opencodeCost(kind string, days int) (float64, error) {
 }
 
 // fetchSpend asks opencode for an account's spend today and over the last 7 days, in the background.
-func fetchSpend(kind string) tea.Cmd {
+func fetchSpend(a Agent) tea.Cmd {
 	return func() tea.Msg {
-		today, err1 := opencodeCost(kind, 0)
-		week, err2 := opencodeCost(kind, 7)
-		return spendMsg{kind, spend{today, week}, err1 == nil && err2 == nil}
+		today, err1 := opencodeCost(a, 0)
+		week, err2 := opencodeCost(a, 7)
+		return spendMsg{a.Name, spend{today, week}, err1 == nil && err2 == nil}
 	}
 }
 
-// usedKinds are the agent kinds the current setup can run: the master and the enabled slaves.
-func (m *model) usedKinds() []string {
-	var ks []string
-	for _, k := range kinds {
-		if k == m.cfg.Master.Agent {
-			ks = append(ks, k)
-			continue
-		}
-		if _, ok := m.cfg.slave(k); ok {
-			ks = append(ks, k)
+// usedAgents are the agents the current setup can run: the lead's and the enabled ones.
+func (m *model) usedAgents() []Agent {
+	var used []Agent
+	for _, a := range m.cfg.Agents {
+		if a.Enabled || a.Name == m.cfg.Lead.Agent {
+			used = append(used, a)
 		}
 	}
-	return ks
+	return used
 }
 
 func (m *model) refreshSpend() tea.Cmd {
 	m.spendAt = time.Now()
 	var cmds []tea.Cmd
-	for _, k := range m.usedKinds() {
-		if strings.HasPrefix(k, "opencode") {
-			cmds = append(cmds, fetchSpend(k))
+	for _, a := range m.usedAgents() {
+		if a.CLI == "opencode" {
+			cmds = append(cmds, fetchSpend(a))
 		}
 	}
 	return tea.Batch(cmds...)
 }
 
-// usageLine is the header's right side: one meter group per agent kind in use.
+// usageLine is the header's right side: one group per agent in use.
 func (m *model) usageLine() string {
 	var parts []string
-	for _, k := range m.usedKinds() {
-		label := badge(k) + " "
-		if k == "claude" {
-			if l := m.limits; l != nil {
+	for _, a := range m.usedAgents() {
+		label := badge(a.Name) + " "
+		if a.CLI == "claude" {
+			if l := m.limits[a.Name]; l != nil {
 				reset := ""
 				if l.FiveReset > 0 {
 					reset = sDim.Render(" ↻" + dur(time.Until(time.Unix(l.FiveReset, 0)).Round(time.Minute)))
@@ -92,7 +84,7 @@ func (m *model) usageLine() string {
 			}
 			continue
 		}
-		if s, ok := m.spend[k]; ok {
+		if s, ok := m.spend[a.Name]; ok {
 			parts = append(parts, label+sDim.Render("today ")+sBold.Render(fmt.Sprintf("$%.2f", s.today))+sDim.Render(" · 7d ")+sBold.Render(fmt.Sprintf("$%.2f", s.week)))
 		} else {
 			parts = append(parts, label+sDim.Render("…"))

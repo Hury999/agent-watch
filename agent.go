@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -37,24 +36,39 @@ type Limits struct {
 }
 
 // newSession makes a session id: claude wants a UUID, opencode wants "ses" + anything.
-func newSession(kind string) string {
+func newSession(cli string) string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	if kind == "claude" {
+	if cli == "claude" {
 		b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
 		return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 	}
 	return "ses_aw" + hex.EncodeToString(b[:8])
 }
 
-// command builds one turn. A non-empty system prompt marks the master.
+// account points a CLI at a non-default account: env vars, and for opencode --standalone,
+// because a separate database can't go through the shared background service.
+func account(a Agent) (env, args []string) {
+	switch {
+	case a.Data == "":
+		return nil, nil
+	case a.CLI == "claude":
+		return []string{"CLAUDE_CONFIG_DIR=" + expand(a.Data)}, nil
+	}
+	return []string{"OPENCODE_DB=" + expand(a.Data)}, []string{"--standalone"}
+}
+
+// command builds one turn. A non-empty system prompt marks the lead.
 func command(a Agent, session string, first bool, prompt, system, dir string) *exec.Cmd {
 	if strings.HasPrefix(prompt, "-") {
 		prompt = " " + prompt // or the CLI reads it as a flag
 	}
-	var cmd *exec.Cmd
-	if a.Agent == "claude" {
-		args := []string{"-p", "--output-format", "stream-json", "--verbose", "--model", a.Model}
+	env, args := account(a)
+	if a.CLI == "claude" {
+		args = append(args, "-p", "--output-format", "stream-json", "--verbose")
+		if a.Model != "" {
+			args = append(args, "--model", a.Model)
+		}
 		if a.Effort != "" {
 			args = append(args, "--effort", a.Effort)
 		}
@@ -64,55 +78,50 @@ func command(a Agent, session string, first bool, prompt, system, dir string) *e
 			args = append(args, "--resume", session)
 		}
 		if system != "" {
-			// No edit tools: the master must not fix slave code itself.
+			// No edit tools: the lead must not fix its agents' code itself.
 			args = append(args, "--allowedTools", "Bash Read Grep Glob", "--append-system-prompt", system)
 		} else {
 			args = append(args, "--permission-mode", "bypassPermissions")
 		}
-		cmd = exec.Command("claude", append(args, prompt)...)
-		cmd.Env = os.Environ()
 	} else {
-		model := a.Model
-		if a.Effort != "" {
-			model += "#" + a.Effort
+		args = append(append([]string{"run"}, args...), "--session", session, "--auto", "--format", "json") // flags only work after "run"
+		if a.Model != "" {
+			model := a.Model
+			if a.Effort != "" {
+				model += "#" + a.Effort
+			}
+			args = append(args, "--model", model)
 		}
-		args := []string{"run", "--session", session, "--model", model, "--auto", "--format", "json"}
 		if system != "" {
 			args = append(args, "--agent", "plan") // opencode's agent that can't edit files
 			if first {
 				prompt = system + "\n\n---\n\n" + prompt
 			}
 		}
-		cmd = exec.Command("opencode", args...)
-		cmd.Env = os.Environ()
-		if a.Agent == "opencode-personal" {
-			home, _ := os.UserHomeDir()
-			cmd.Env = append(cmd.Env, "OPENCODE_DB="+filepath.Join(home, ".local/share/opencode/personal.db"))
-			cmd.Args = append(cmd.Args, "--standalone")
-		}
-		cmd.Args = append(cmd.Args, prompt)
 	}
+	cmd := exec.Command(a.CLI, append(args, prompt)...)
 	// stdin stays nil (/dev/null): opencode waits forever on an open non-tty stdin.
 	cmd.Dir = dir
-	cmd.Env = append(cmd.Env, "PWD="+dir)                 // opencode takes its directory from $PWD, which an explicit Env leaves stale
+	// opencode takes its directory from $PWD, which an explicit Env would leave stale.
+	cmd.Env = append(append(os.Environ(), env...), "PWD="+dir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // so stop can kill the whole tree
 	return cmd
 }
 
-// interrupt stops a session server-side. Only needed for opencode's shared background service
-// (opencode-decomp), which keeps running a session after its client is killed.
+// interrupt stops a session server-side. Only opencode's shared background service needs it:
+// it keeps running a session after its client is killed. Standalone servers die with the client.
 func interrupt(a Agent, session string) {
-	if a.Agent == "opencode-decomp" {
+	if a.CLI == "opencode" && a.Data == "" {
 		exec.Command("opencode", "api", "session.interrupt", "--param", "sessionID="+session).Run()
 	}
 }
 
 // parse turns one line of an agent's JSON output into display lines and what it adds to the totals.
-func parse(kind string, raw []byte) ([]Line, Delta) {
+func parse(cli string, raw []byte) ([]Line, Delta) {
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, Delta{}
 	}
-	if kind == "claude" {
+	if cli == "claude" {
 		return parseClaude(raw)
 	}
 	return parseOpencode(raw)
