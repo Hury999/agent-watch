@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -74,7 +75,7 @@ func runTUI(resume string) error {
 		return err
 	}
 	in := textinput.New()
-	in.Prompt = sAccent.Render("> ")
+	in.Prompt = sAccent.Render("› ")
 	in.PlaceholderStyle = sDim
 	in.Cursor.Style = sAccent
 	in.Placeholder = "message the lead…"
@@ -129,6 +130,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pollRequests() {
 			m.refresh()
 		}
+		for _, a := range m.workers {
+			if a.running && a.stopReason == "" && time.Since(a.heard) > stallAfter {
+				a.stop("stalled: no output for " + dur(stallAfter))
+			}
+		}
 		if time.Since(m.spendAt) > 5*time.Minute {
 			return m, tea.Batch(tick(), m.refreshSpend())
 		}
@@ -136,6 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case linesMsg:
 		m.dirty = true
 		a, d := msg.a, msg.d
+		a.heard = time.Now()
 		a.lines = append(a.lines, msg.lines...)
 		a.cost, a.turnCost = a.cost+d.Cost, a.turnCost+d.Cost
 		a.in, a.out, a.turnIn, a.turnOut = a.in+d.In, a.out+d.Out, a.turnIn+d.In, a.turnOut+d.Out
@@ -318,6 +325,12 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if s.running {
 				s.stop("stopped by the user")
 			}
+		case "d", "delete":
+			if s.running {
+				m.status = s.name + " is still working: x stops it, then d removes it"
+			} else {
+				m.remove(s)
+			}
 		}
 		return m, nil
 	}
@@ -372,6 +385,25 @@ func (m *model) setFocusList(on bool) {
 	} else {
 		m.input.Focus()
 	}
+}
+
+// remove takes a finished agent off the list; its workdir and log stay. The lead is told, so it
+// doesn't message it, and the name is free for a new agent.
+func (m *model) remove(a *agentState) {
+	i := slices.Index(m.workers, a)
+	m.workers = slices.Delete(m.workers, i, i+1)
+	if m.target == a {
+		m.target = nil
+	}
+	m.sel = min(m.sel, max(len(m.workers)-1, 0))
+	m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user removed agent %q from the list: it can't be messaged any more, and its workdir %s is untouched.", a.name, a.dir))
+	if len(m.workers) == 0 {
+		m.full = false
+	}
+	m.setFocusList(m.focusList)
+	m.dirty = true
+	m.svp.GotoBottom()
+	m.layout()
 }
 
 func (m *model) selectWorker(i int) {
@@ -463,22 +495,70 @@ func (m *model) logPath(a *agentState) string { return filepath.Join(m.runDir, a
 
 func (m *model) layout() {
 	lw := m.leftW()
-	// panels: border (2) + padding (2) wide; border (2) + status line (1) high
-	m.mvp.Width, m.mvp.Height = max(lw-4, 1), max(m.bodyH()-3, 1)
+	// the lead's pane: padding (2) wide; title, blank line and status line high
+	m.mvp.Width, m.mvp.Height = max(lw-2, 1), max(m.bodyH()-3, 1)
+	// agent panels: border (2) + padding (2) wide; border (2) + status line (1) high
 	if m.full {
 		m.svp.Width, m.svp.Height = max(m.w-4, 1), max(m.bodyH()-3, 1)
 	} else {
 		m.svp.Width, m.svp.Height = max(m.w-lw-4, 1), max(m.bodyH()-m.listH()-3, 1)
 	}
-	m.input.Width = max(m.w-8, 1)
+	m.input.Width = max(m.w-5, 1)
 	m.refresh()
 }
 
 func (m *model) refresh() {
-	setContent(&m.mvp, m.lead.lines)
+	if len(m.lead.lines) == 0 {
+		m.mvp.SetContent(m.welcome())
+	} else {
+		setContent(&m.mvp, m.lead.lines)
+	}
 	if len(m.workers) > 0 {
 		setContent(&m.svp, m.workers[m.sel].lines)
 	}
+}
+
+// welcome fills a new run's empty lead pane, like Claude Code's: a card, tips, and who can work.
+func (m *model) welcome() string {
+	w := max(m.mvp.Width, 20)
+	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cAccent).Padding(0, 1).Width(min(w, 72) - 2).Render(
+		sAccent.Render("✻ ") + sBold.Render("Welcome to agent-watch!") + "\n\n" +
+			sDim.Render("The lead plans and judges, agents do the work.") + "\n" + sDim.Render("cwd: "+tilde(m.cwd)))
+	example := "use 2 agents"
+	if e := m.enabled(); len(e) > 0 {
+		example = "use 2 " + e[0] + " agents"
+	}
+	tips := []string{
+		"Tell the lead what you want done. It reads the code, plans, and waits for your go.",
+		"Say which agents and how many: \"" + example + "\". Each gets its own git worktree.",
+		"Watch them on the right. " + sAccent.Render("tab") + " picks one, " + sAccent.Render("m") + " messages it, " + sAccent.Render("x") + " stops it.",
+		"The lead checks every result itself and asks before it commits or merges.",
+	}
+	out := []string{card, "", sBold.Render("Tips for getting started:")}
+	for i, t := range tips {
+		out = append(out, hang(sDim.Render(fmt.Sprintf(" %d. ", i+1)), lipgloss.NewStyle().Foreground(cText).Width(w-4).Render(t)))
+	}
+	lead := m.cfg.lead()
+	out = append(out, "", sBold.Render("Who works")+sDim.Render(" · ctrl+s to change"),
+		"  "+sAccent.Render(fmt.Sprintf("%-12s", "lead"))+sDim.Render(lead.CLI+" "+strings.TrimPrefix(describe(lead), lead.Name+" ")))
+	for _, a := range m.cfg.Agents {
+		if a.Enabled {
+			out = append(out, "  "+lipgloss.NewStyle().Foreground(agentColors[a.Name]).Render(fmt.Sprintf("%-12s", clip(a.Name, 11)))+
+				sDim.Render(a.CLI+" "+strings.TrimPrefix(describe(a), a.Name+" ")))
+		}
+	}
+	if len(m.enabled()) == 0 {
+		out = append(out, sYellow.Render("  no agent types enabled yet: ctrl+s opens the setup"))
+	}
+	return strings.Join(out, "\n")
+}
+
+// tilde shortens a path in the home directory to ~/...
+func tilde(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && (p == home || strings.HasPrefix(p, home+"/")) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // setContent re-renders a pane, staying at the bottom if it was there.
@@ -507,8 +587,12 @@ func icon(a *agentState) string {
 // statusLine is a pane's last line: the live spinner while running, the totals when idle.
 func statusLine(a *agentState, idle string) string {
 	if a.running {
-		return sAccent.Render(spinFrame()) + " " + shimmer(a.verb+"…") +
+		s := sAccent.Render(spinFrame()) + " " + shimmer(a.verb+"…") +
 			sDim.Render(fmt.Sprintf(" (%s · ↑ %s ↓ %s · $%.3f)", dur(time.Since(a.started)), tokens(a.turnIn), tokens(a.turnOut), a.turnCost))
+		if quiet := time.Since(a.heard); quiet > time.Minute {
+			s += sYellow.Render(" · no output for " + dur(quiet.Truncate(time.Minute)))
+		}
+		return s
 	}
 	if a.turns == 0 {
 		return sDim.Render(idle)
@@ -528,6 +612,23 @@ func agentTitle(a *agentState, name string) string {
 	return name + sDim.Render(" · ") + who + " " + sDim.Render(strings.TrimPrefix(describe(a.cfg), a.cfg.Name+" "))
 }
 
+// doing is an agent's latest tool call or message, so the list shows what each one is up to.
+func doing(a *agentState) string {
+	for i := len(a.lines) - 1; i >= 0; i-- {
+		switch l := a.lines[i]; l.Kind {
+		case "you":
+			return sDim.Render("reading its brief")
+		case "tool":
+			return sGreen.Render(l.Text) + " " + sDim.Render(relative(l.Arg, a.dir))
+		case "text":
+			return lipgloss.NewStyle().Foreground(cText).Render(strings.NewReplacer("`", "", "**", "").Replace(oneLine(l.Text)))
+		case "err", "fail":
+			return sRed.Render(oneLine(l.Text))
+		}
+	}
+	return ""
+}
+
 func (m *model) workerRows(w int) string {
 	if len(m.workers) == 0 {
 		return sDim.Render("none yet · the lead starts them")
@@ -539,42 +640,54 @@ func (m *model) workerRows(w int) string {
 		if s.running {
 			took += time.Since(s.started)
 		}
-		model := s.cfg.Model[strings.LastIndex(s.cfg.Model, "/")+1:]
-		row := icon(s) + " " +
-			sBold.Render(fmt.Sprintf("%-12s", clip(s.name, 12))) + " " +
-			lipgloss.NewStyle().Foreground(agentColors[s.cfg.Name]).Render(fmt.Sprintf("%-17s", clip(s.cfg.Name, 17))) + " " +
-			sDim.Render(fmt.Sprintf("%7s  ↓%-6s $%.3f  %s", dur(took), tokens(s.out), s.cost, model))
-		row = xansi.Truncate(row, w, "…")
-		if i == m.sel {
-			bg := lipgloss.NewStyle().Width(w)
-			if m.focusList {
-				bg = bg.Background(cSelBg)
-			}
-			row = bg.Render(row)
+		mark := "  "
+		if i == m.sel && m.focusList {
+			mark = sAccent.Render("› ") // a pointer, not just a color, marks the selection
 		}
-		rows = append(rows, row)
+		row := mark + icon(s) + " " +
+			sBold.Render(fmt.Sprintf("%-10s", clip(s.name, 10))) + " " +
+			lipgloss.NewStyle().Foreground(agentColors[s.cfg.Name]).Render(fmt.Sprintf("%-8s", clip(s.cfg.Name, 8))) + " " +
+			sDim.Render(fmt.Sprintf("%6s $%.2f  ", dur(took), s.cost)) + doing(s)
+		rows = append(rows, xansi.Truncate(row, w, "…"))
 	}
 	return strings.Join(rows, "\n")
 }
 
 func (m *model) header() string {
 	logo := lipgloss.NewStyle().Background(cAccent).Foreground(lipgloss.Color("#1A1A1A")).Bold(true).Render(" ✻ agent-watch ")
-	home, _ := os.UserHomeDir()
-	where := sDim.Render(" " + strings.Replace(m.cwd, home, "~", 1))
-	usage := m.usageLine()
-	gap := m.w - lipgloss.Width(logo) - lipgloss.Width(where) - lipgloss.Width(usage) - 1
-	if gap < 1 {
-		where, gap = "", max(m.w-lipgloss.Width(logo)-lipgloss.Width(usage)-1, 1)
+	cost := m.lead.cost
+	for _, a := range m.workers {
+		cost += a.cost
 	}
-	return xansi.Truncate(logo+where+strings.Repeat(" ", gap)+usage, m.w, "…")
+	run := sDim.Render("  run ") + sBold.Render(fmt.Sprintf("$%.2f", cost))
+	usage := m.usageLine()
+	// The folder gets what's left, cut from the left so the project's name stays.
+	where := ""
+	if room := m.w - lipgloss.Width(logo+run+usage) - 5; room > 8 {
+		p := []rune(tilde(m.cwd))
+		if len(p) > room {
+			p = append([]rune("…"), p[len(p)-room+1:]...)
+		}
+		where = sDim.Render("  " + string(p))
+	}
+	gap := max(m.w-lipgloss.Width(logo+run+where+usage)-1, 1)
+	return xansi.Truncate(logo+run+where+strings.Repeat(" ", gap)+usage, m.w, "…")
 }
 
 func (m *model) footer() string {
 	if m.status != "" {
 		return sYellow.Render(xansi.Truncate(" "+m.status, m.w, "…"))
 	}
-	keys := [][2]string{{"enter", "send"}, {"tab", "agents"}, {"click", "select"}, {"m", "message agent"},
-		{"x", "stop agent"}, {"⏎/click", "fullscreen"}, {"wheel", "scroll"}, {"esc", "back"}, {"^s", "setup"}, {"^c", "quit"}}
+	keys := [][2]string{{"enter", "send"}, {"tab", "agents"}, {"pgup/pgdn", "scroll"}, {"^s", "setup"}, {"^c", "quit"}}
+	switch {
+	case m.full:
+		keys = [][2]string{{"↑↓", "other agent"}, {"m", "message it"}, {"x", "stop it"}, {"d", "remove it"}, {"pgup/pgdn", "scroll"}, {"enter/esc", "close"}}
+	case m.focusList:
+		keys = [][2]string{{"↑↓", "select"}, {"enter", "fullscreen"}, {"m", "message it"}, {"x", "stop it"},
+			{"d", "remove it"}, {"pgup/pgdn", "scroll"}, {"tab/esc", "back to input"}}
+	case m.target != nil:
+		keys = [][2]string{{"enter", "send to " + m.target.name}, {"esc", "cancel"}}
+	}
 	var parts []string
 	for _, k := range keys {
 		parts = append(parts, sAccent.Render(k[0])+" "+sDim.Render(k[1]))
@@ -601,7 +714,12 @@ func (m *model) View() string {
 		if m.cfg.Lead.Edit {
 			mt += sDim.Render(" · may edit")
 		}
-		left := panel(mt, m.mvp.View()+"\n"+statusLine(m.lead, "type below to talk to the lead"), lw, bodyH, !m.focusList)
+		if !m.focusList {
+			mt = sAccent.Render("✻ ") + agentTitle(m.lead, sAccent.Bold(true).Render("Lead"))
+		}
+		// Borderless like Claude Code's chat; the agents' panels frame the other side.
+		left := lipgloss.NewStyle().Width(lw).Height(bodyH).MaxHeight(bodyH).Padding(0, 1).
+			Render(mt + "\n\n" + m.mvp.View() + "\n" + statusLine(m.lead, "type below to talk to the lead"))
 		run, done := 0, 0
 		for _, s := range m.workers {
 			if s.running {
@@ -612,17 +730,18 @@ func (m *model) View() string {
 		}
 		lt := sBold.Render("Agents") + sDim.Render(fmt.Sprintf(" · %d running · %d done", run, done))
 		list := panel(lt, m.workerRows(m.w-lw-4), m.w-lw, m.listH(), m.focusList)
-		detail := panel(sDim.Render("no agent selected"), "", m.w-lw, bodyH-m.listH(), false)
+		detail := panel(sDim.Render("no agent yet"), sDim.Render(lipgloss.NewStyle().Width(max(m.w-lw-4, 1)).Render(
+			"When the lead puts agents to work, they're listed above and the selected one's live transcript shows here.")), m.w-lw, bodyH-m.listH(), false)
 		if len(m.workers) > 0 {
 			s := m.workers[m.sel]
 			detail = panel(icon(s)+" "+agentTitle(s, sBold.Render(s.name)), m.svp.View()+"\n"+statusLine(s, ""), m.w-lw, bodyH-m.listH(), m.focusList)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, lipgloss.JoinVertical(lipgloss.Left, list, detail))
 	}
-	ib := cBorder
+	rule := lipgloss.NewStyle().Foreground(cBorder).Render(strings.Repeat("─", m.w))
 	if !m.focusList {
-		ib = cAccent
+		rule = sDim.Render(strings.Repeat("─", m.w))
 	}
-	input := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ib).Padding(0, 1).Width(m.w - 2).Render(m.input.View())
+	input := rule + "\n " + m.input.View() + "\n" + rule
 	return lipgloss.JoinVertical(lipgloss.Left, m.header(), body, input, m.footer())
 }

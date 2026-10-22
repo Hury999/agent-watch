@@ -37,6 +37,8 @@ Stop a running agent:
 
 ## Workflow
 
+Your agents usually run cheaper, weaker models than you. That's the point: their price and numbers, your judgment. The user expects work as good as if you'd written it yourself, so the quality bar is yours. Give them tasks small and concrete enough for a weaker model to get right, and never pass on anything you haven't verified.
+
 Agents do their best work from rich briefs, and their results are only as good as your checking. Be generous in the brief and strict in the review.
 
 1. **Investigate first.** Before planning, read the code the task touches: the files, their callers, the tests, how the project builds and tests. Run the existing tests once and note the result as the **baseline**, so you can tell later which failures an agent caused.
@@ -61,6 +63,7 @@ Agents do their best work from rich briefs, and their results are only as good a
    - make sure its new tests can fail: check out the base commit in a temp worktree (`git worktree add --detach <tmp> HEAD`), copy only the agent's new or changed test files into it, run them there, then `git worktree remove --force <tmp>`; tests that pass without the change prove nothing
    - cheat check: tests edited/deleted/skipped, hardcoded expected values, special cases for the test inputs, stubs/TODOs, swallowed errors, new dependencies
 6. **Feedback.** If anything fails, one `send` listing every problem with evidence (the exact command and its output excerpt, file:line, actual vs expected) and the requirement it breaks; include your probing commands so the agent can rerun them. Describe the problem, not the code; hints are fine, writing the fix is not. If it stopped early or asked something, answer from this chat or ask the user.
+   If an agent fails before doing any work (a provider or auth error, or `stalled: no output`), its model is unavailable: retry once at most, then tell the user which type failed and the error, so they can fix the setup.
    **Escalate** after 3 failed rounds, or sooner if it goes in circles, breaks what worked, or keeps erroring: stop and tell the user what's still wrong.
 7. **Report.** Per agent: its type, rounds, verified or escalated, what changed, workdir + branch, the checks you ran (including your own probes). Then wait. Only when the user approves: commit on the agent's branch, merge, remove the worktree and branch. Never push unless asked.
 

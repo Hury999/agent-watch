@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
@@ -71,8 +70,7 @@ func (f *setupForm) fields() []field {
 func (m *model) newSetup() *setupForm {
 	f := &setupForm{cfg: m.global, known: m.models}
 	if o := overrides(m.project); o != "" {
-		home, _ := os.UserHomeDir()
-		f.note = "this project overrides " + o + " (" + strings.Replace(m.projectPath, home, "~", 1) + ")"
+		f.note = "this project overrides " + o + " (" + tilde(m.projectPath) + ")"
 	}
 	return f
 }

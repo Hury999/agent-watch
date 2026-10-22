@@ -37,7 +37,8 @@ type Config struct {
 
 var clis = []string{"claude", "opencode"}
 
-// defaultConfig has one agent per CLI with its default account and model, enabled if it's installed.
+// defaultConfig has one agent per CLI with its default account and model, enabled if it's installed,
+// and Claude Opus as the lead when Claude is installed.
 func defaultConfig() Config {
 	var c Config
 	for _, cli := range clis {
@@ -49,6 +50,9 @@ func defaultConfig() Config {
 	}
 	if c.Lead.CLI == "" {
 		c.Lead.CLI = "claude"
+	}
+	if c.Lead.CLI == "claude" {
+		c.Lead.Model = "opus" // the lead's judgment is what makes cheap agents' work good
 	}
 	return c
 }

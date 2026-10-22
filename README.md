@@ -52,8 +52,9 @@ It reads the code, proposes a plan (which agent does what, in which worktree) an
 What you see:
 
 - Transcripts in Claude Code style (`⏺` messages and tool calls, `⎿` output), with agents' markdown rendered: headings, lists, tables, code.
-- A live spinner per agent with elapsed time, tokens (↑ in ↓ out) and cost; every turn ends with how long it took.
-- A header with each Claude account's 5-hour and 7-day usage (from its own rate limit reports) and each opencode account's spend today and over 7 days (`opencode stats`; opencode has no limits API).
+- The agent list shows what each agent is doing right now: its latest tool call, or the start of its reply.
+- A live spinner per agent with elapsed time, tokens (↑ in ↓ out) and cost; every turn ends with how long it took. An agent that shows nothing for a minute says so; after 10 minutes it's stopped and the lead is told (a hung model would otherwise sit there until the 2-hour timeout).
+- A header with what the run has cost so far, each Claude account's 5-hour and 7-day usage (from its own rate limit reports) and each opencode account's spend today and over 7 days (`opencode stats`; opencode has no limits API).
 
 ## Agents
 
@@ -67,7 +68,7 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 | model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), or Claude's. Effort then offers only that model's levels. |
 | lead may use it | whether the lead can put it to work |
 
-The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. **may edit files** (off by default) gives it edit tools for small fixes, merges and housekeeping; a project file can switch it on with `"lead": {"edit": true}`. The setup is saved to `~/.config/agent-watch/config.json`.
+The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. A fresh setup makes Claude Opus the lead: the idea is Opus's judgment on cheap agents' work. **may edit files** (off by default) gives it edit tools for small fixes, merges and housekeeping; a project file can switch it on with `"lead": {"edit": true}`. The setup is saved to `~/.config/agent-watch/config.json`.
 
 Agents are types, not a team that always runs together: tell the lead which ones you want and how many, e.g. *"use 3 ds3 for the parsers and one opus for the review"*, and it starts just those. If you don't say, it picks a type and names it in its plan.
 
@@ -96,6 +97,7 @@ The setup screen edits the global config and shows what the project overrides; e
 | `enter` (list) | selected agent fullscreen |
 | `m` (list) | message the selected agent directly; the lead is told |
 | `x` (list) | stop the selected agent |
+| `d` (list) | remove the selected agent once it's done; its worktree stays, and the lead is told |
 | `pgup` / `pgdn` | scroll the lead (or the agent when the list is focused) |
 | `esc` | back |
 | `ctrl+s` | setup |
@@ -109,7 +111,7 @@ Mouse capture means selecting text needs `shift` + drag in most terminals.
 
 - The lead gets `lead.md` as its instructions and drives agents with `aw spawn|send|stop`. Those commands hand a request file to the running app, which checks it against your setup and starts the agent.
 - When an agent finishes a turn, the app wakes the lead with the agent's final reply.
-- Each turn has a 45-minute timeout. A stopped or timed-out turn is also interrupted on opencode's shared service, which would otherwise keep running it.
+- Each turn has a 2-hour timeout. A stopped or timed-out turn is also interrupted on opencode's shared service, which would otherwise keep running it.
 - Every run is saved in `~/.local/state/agent-watch/<run>/`: its state (sessions, transcripts, totals) and every agent's raw output.
 
 ## Update

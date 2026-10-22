@@ -117,8 +117,9 @@ func markdown(s string, w int) string {
 		for _, h := range []*ansi.StyleBlock{&cfg.H2, &cfg.H3, &cfg.H4, &cfg.H5, &cfg.H6} {
 			h.Prefix = ""
 		}
-		code, codeBg := string(cBlue), string(cUserBg) // the dark style's red reads like an error
-		cfg.Code.Color, cfg.Code.BackgroundColor = &code, &codeBg
+		// Inline code just blue, like Claude Code: the dark style's red reads like an error, its padded gray box breaks up sentences.
+		code := string(cBlue)
+		cfg.Code.Color, cfg.Code.BackgroundColor, cfg.Code.Prefix, cfg.Code.Suffix = &code, nil, "", ""
 		var err error
 		if r, err = glamour.NewTermRenderer(glamour.WithStyles(cfg), glamour.WithWordWrap(w)); err != nil {
 			return lipgloss.NewStyle().Width(w).Render(s)
@@ -159,7 +160,7 @@ func renderBlock(l Line, prev string, w int) string {
 		if lines := strings.Split(text, "\n"); len(lines) > 12 {
 			text = strings.Join(lines[:12], "\n") + fmt.Sprintf("\n… +%d lines", len(lines)-12)
 		}
-		return lipgloss.NewStyle().Background(cUserBg).Foreground(cText).Width(w).Padding(0, 1).Render("> " + text)
+		return lipgloss.NewStyle().Background(cUserBg).Foreground(cText).Width(w).Padding(0, 1).Render("› " + text)
 	case "text":
 		return hang(lipgloss.NewStyle().Foreground(cText).Render("⏺ "), markdown(l.Text, max(w-2, 10)))
 	case "think":

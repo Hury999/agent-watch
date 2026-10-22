@@ -40,7 +40,8 @@ All of these were real bugs. Each has a test or a comment; keep both.
 - **opencode reads its directory from `$PWD`**, not the process cwd. `command` sets `PWD` to the workdir.
 - **opencode's shared background service keeps running a session after its client dies.** Stopping or timing out a default-account opencode turn must also call `session.interrupt` (`interrupt`). `--standalone` (another account) dies with its client.
 - **Signals and child processes:** agents run in their own process group (`Setpgid`) and are stopped with a signal to the group. That's why there's no Windows build.
-- **Session ids:** Claude wants a v4 UUID, opencode wants a `ses` prefix (`newSession`).
+- **Session ids:** Claude wants a v4 UUID; opencode wants its own shape, `ses_` + 12 hex + 14 base62 (`newSession`). Any other shape and opencode's free models answer `403 FreeTierError`.
+- **A hung provider is silent.** opencode retries a dead model every 15 minutes without printing anything, so an agent whose output shows nothing for `stallAfter` (10m) is stopped and the lead is told. `opencode-go/beam-free` hangs like this; `opencode/beam-free` works.
 - **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
 - **glamour's dark style keeps `##` before headings** and colors inline code red; `markdown` overrides both. The user cares how agent markdown looks.
 - **The lead has no edit tools by default** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent): its job is to brief and verify, not to fix agents' code. Only the user's **may edit files** setting (`Lead.Edit`) gives them back, along with the small-fixes rule (`editRule`). Keep `--append-system-prompt` right after `--allowedTools`: the tool list takes several values and would swallow a prompt that followed it.

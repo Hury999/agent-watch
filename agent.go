@@ -3,14 +3,16 @@ package main
 // One turn of an agent CLI: the command that runs it, and its JSON output turned into display lines.
 
 import (
+	"cmp"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Line is one displayed block of a transcript.
@@ -35,7 +37,8 @@ type Limits struct {
 	FiveReset, SevenReset int64
 }
 
-// newSession makes a session id: claude wants a UUID, opencode wants "ses" + anything.
+// newSession makes a session id: claude wants a UUID, opencode its own shape, "ses_" + 12 hex + 14 base62.
+// opencode's free tier refuses any other shape with a 403 FreeTierError.
 func newSession(cli string) string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -43,7 +46,14 @@ func newSession(cli string) string {
 		b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
 		return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 	}
-	return "ses_aw" + hex.EncodeToString(b[:8])
+	// The hex is opencode's descending timestamp, so its session list sorts ours like its own.
+	t := ^uint64(time.Now().UnixMilli() * 0x1000)
+	const b62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	r := make([]byte, 14)
+	for i := range r {
+		r[i] = b62[int(b[i])%len(b62)]
+	}
+	return fmt.Sprintf("ses_%012x%s", t&(1<<48-1), r)
 }
 
 // account points a CLI at a non-default account: env vars, and for opencode --standalone,
@@ -149,7 +159,10 @@ func parseOpencode(raw []byte) ([]Line, Delta) {
 				Error  string
 			}
 		}
-		Error any
+		Error struct {
+			Type, Name, Message string
+			Data                struct{ Message string }
+		}
 	}
 	if json.Unmarshal(raw, &e) != nil {
 		return []Line{{Kind: "info", Text: string(raw)}}, Delta{}
@@ -170,8 +183,13 @@ func parseOpencode(raw []byte) ([]Line, Delta) {
 		t := p.Tokens
 		return nil, Delta{Cost: p.Cost, In: t.Input + t.Cache.Read + t.Cache.Write, Out: t.Output + t.Reasoning}
 	case "error":
-		b, _ := json.Marshal(e.Error)
-		return []Line{{Kind: "err", Text: string(b)}}, Delta{}
+		// Just the message: the full error repeats it inside an escaped response body.
+		er := e.Error
+		msg := cmp.Or(er.Message, er.Data.Message, string(raw))
+		if kind := cmp.Or(er.Type, er.Name); kind != "" && kind != "unknown" {
+			msg = kind + ": " + msg
+		}
+		return []Line{{Kind: "err", Text: msg}}, Delta{}
 	}
 	return nil, Delta{}
 }
@@ -296,6 +314,18 @@ func outLines(out string) []Line {
 		}
 	}
 	return lines
+}
+
+// relative shows paths in and next to dir as Claude Code does: "x.go", "../repo-aw-x/x.go".
+func relative(s, dir string) string {
+	if dir == "" || dir == "/" {
+		return s
+	}
+	s = strings.ReplaceAll(s, dir+"/", "")
+	if parent := filepath.Dir(dir); parent != "/" {
+		s = strings.ReplaceAll(s, parent+"/", "../")
+	}
+	return s
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }

@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -79,8 +81,8 @@ func TestNewSession(t *testing.T) {
 	if s := newSession("claude"); !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(s) {
 		t.Errorf("claude session %q is not a v4 UUID", s)
 	}
-	if s := newSession("opencode-personal"); !strings.HasPrefix(s, "ses") {
-		t.Errorf("opencode session %q must start with ses", s)
+	if s := newSession("opencode"); !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(s) {
+		t.Errorf("opencode session %q is not in opencode's shape", s)
 	}
 }
 
@@ -367,5 +369,75 @@ func TestLeadMayEdit(t *testing.T) {
 	// agents always edit: the toggle is only about the lead
 	if a := strings.Join(command(Agent{CLI: "claude"}, "u", true, "hi", "", "/w", false).Args, " "); !strings.Contains(a, "bypassPermissions") {
 		t.Errorf("an agent lost its permissions: %q", a)
+	}
+}
+
+// opencode's errors show their message, not the escaped response body that repeats it.
+func TestParseOpencodeError(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"type":"error","error":{"type":"provider.auth","message":"free tier only in OpenCode","status":403,"response":{"body":"{\"x\":1}"}}}`: "provider.auth: free tier only in OpenCode",
+		`{"type":"error","error":{"type":"unknown","message":"Transport: socket closed"}}`:                                                      "Transport: socket closed",
+		`{"type":"error","error":{"name":"APIError","data":{"message":"rate limited"}}}`:                                                        "APIError: rate limited",
+	} {
+		if lines, _ := parse("opencode", []byte(raw)); len(lines) != 1 || lines[0].Kind != "err" || lines[0].Text != want {
+			t.Errorf("parse(%s) = %+v, want err %q", raw, lines, want)
+		}
+	}
+}
+
+func TestRelative(t *testing.T) {
+	for in, want := range map[string]string{
+		"/w/repo/a.go":                          "a.go",
+		"cd /w/repo-aw-x && git diff":           "cd ../repo-aw-x && git diff",
+		"/w/repo":                               "../repo",
+		"grep -r x /etc/hosts /w/repo/src/m.go": "grep -r x /etc/hosts src/m.go",
+	} {
+		if got := relative(in, "/w/repo"); got != want {
+			t.Errorf("relative(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// An agent whose output shows nothing for stallAfter is stopped, not left to the turn timeout.
+func TestStalledAgentIsStopped(t *testing.T) {
+	m := &model{runDir: t.TempDir(), lead: &agentState{name: "lead"}, spendAt: time.Now()}
+	sleep := exec.Command("sleep", "60")
+	sleep.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := sleep.Start(); err != nil {
+		t.Fatal(err)
+	}
+	quiet := &agentState{name: "quiet", cfg: Agent{CLI: "claude"}, cmd: sleep, running: true, heard: time.Now().Add(-stallAfter - time.Second)}
+	busy := &agentState{name: "busy", cfg: Agent{CLI: "claude"}, running: true, heard: time.Now()}
+	m.workers = []*agentState{quiet, busy}
+	m.Update(tickMsg{})
+	if !strings.HasPrefix(quiet.stopReason, "stalled") || busy.stopReason != "" {
+		t.Errorf("stop reasons: quiet %q, busy %q", quiet.stopReason, busy.stopReason)
+	}
+	if err := sleep.Wait(); err == nil {
+		t.Error("the stalled agent's process is still running")
+	}
+}
+
+// d removes a finished agent from the list and tells the lead; a working one stays.
+func TestRemoveAgent(t *testing.T) {
+	m := &model{lead: &agentState{name: "lead"}}
+	done := &agentState{name: "scout", dir: "/w/repo-aw-scout", turns: 1}
+	busy := &agentState{name: "fixer", turns: 1, running: true}
+	m.workers, m.focusList, m.sel, m.target = []*agentState{busy, done}, true, 1, done
+	d := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")}
+
+	m.key(d)
+	if len(m.workers) != 1 || m.workers[0] != busy || m.sel != 0 || m.target != nil {
+		t.Fatalf("after d on scout: workers %d, sel %d, target %v", len(m.workers), m.sel, m.target)
+	}
+	if len(m.notes) != 1 || !strings.Contains(m.notes[0], `"scout"`) {
+		t.Errorf("the lead isn't told: %q", m.notes)
+	}
+	m.key(d)
+	if len(m.workers) != 1 || !strings.Contains(m.status, "still working") {
+		t.Errorf("a working agent was removed, or no hint: %d agents, status %q", len(m.workers), m.status)
+	}
+	if m.handle(request{Op: "send", Name: "scout", Prompt: "hi"}) != "error: no agent named scout" {
+		t.Error("the removed agent can still be messaged")
 	}
 }

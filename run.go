@@ -24,7 +24,11 @@ import (
 //go:embed lead.md
 var leadPrompt string
 
-const turnTimeout = 45 * time.Minute
+const turnTimeout = 2 * time.Hour // slow agents need room; hung ones are caught sooner by stallAfter
+
+// stallAfter stops an agent whose output has shown nothing for this long: a hung provider
+// (opencode retries silently every 15 minutes) would otherwise hold it until the turn timeout.
+const stallAfter = 10 * time.Minute
 
 var prog *tea.Program
 
@@ -41,6 +45,7 @@ type agentState struct {
 	exit               int
 	verb               string        // the spinner's word for this turn
 	started            time.Time     // when this turn started
+	heard              time.Time     // when its output last showed something
 	lastDur, totalDur  time.Duration // last turn's and all turns' run time
 	in, out            int64         // tokens over all turns
 	turnIn, turnOut    int64
@@ -83,8 +88,8 @@ func (a *agentState) start(prompt, system string, env []string, logPath string) 
 	}
 	a.cmd, a.running, a.stopReason, a.lastText, a.lastErr = cmd, true, "", "", ""
 	a.turns++
-	a.verb, a.started, a.turnIn, a.turnOut, a.turnCost = randomVerb(), time.Now(), 0, 0, 0
-	timer := time.AfterFunc(turnTimeout, func() { prog.Send(stopMsg{a, "timed out after " + turnTimeout.String()}) })
+	a.verb, a.started, a.heard, a.turnIn, a.turnOut, a.turnCost = randomVerb(), time.Now(), time.Now(), 0, 0, 0
+	timer := time.AfterFunc(turnTimeout, func() { prog.Send(stopMsg{a, "timed out after " + dur(turnTimeout)}) })
 	log, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	go func() {
 		defer log.Close()
@@ -104,6 +109,12 @@ func (a *agentState) start(prompt, system string, env []string, logPath string) 
 		for sc.Scan() {
 			fmt.Fprintf(log, "%s\n", sc.Bytes())
 			if lines, d := parse(a.cfg.CLI, sc.Bytes()); len(lines) > 0 || d != (Delta{}) {
+				for i := range lines {
+					lines[i].Arg = relative(lines[i].Arg, a.dir)
+					if lines[i].Kind == "out" {
+						lines[i].Text = relative(lines[i].Text, a.dir)
+					}
+				}
 				prog.Send(linesMsg{a, lines, d})
 			}
 		}
