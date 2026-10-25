@@ -32,6 +32,16 @@ ln -s "$PWD/agent-watch" ~/.local/bin/aw
 
 (`~/.local/bin` must be on your `PATH`.)
 
+On Windows there is no release yet; build it with Go and put the executable on your `PATH`:
+
+```powershell
+git clone https://github.com/n-delic/agent-watch; cd agent-watch
+go build -o agent-watch.exe .
+copy agent-watch.exe $HOME\.local\bin\aw.exe
+```
+
+Run it in [Windows Terminal](https://aka.ms/terminal); the legacy console host renders colors and borders poorly.
+
 **3. Run it in the project you want to work on:**
 
 ```bash
