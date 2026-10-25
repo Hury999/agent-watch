@@ -72,8 +72,10 @@ func command(a Agent, session string, first bool, prompt, system, dir string, ed
 	if strings.HasPrefix(prompt, "-") {
 		prompt = " " + prompt // or the CLI reads it as a flag
 	}
+	images := imagePaths(prompt)
 	env, args := account(a)
 	if a.CLI == "claude" {
+		prompt = withImages(prompt, images)
 		args = append(args, "-p", "--output-format", "stream-json", "--verbose")
 		if a.Model != "" {
 			args = append(args, "--model", a.Model)
@@ -97,6 +99,9 @@ func command(a Agent, session string, first bool, prompt, system, dir string, ed
 		}
 	} else {
 		args = append(append([]string{"run"}, args...), "--session", session, "--auto", "--format", "json") // flags only work after "run"
+		for _, img := range images {
+			args = append(args, "--file", img)
+		}
 		if a.Model != "" {
 			model := a.Model
 			if a.Effort != "" {
