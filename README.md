@@ -100,6 +100,7 @@ The setup screen edits the global config and shows what the project overrides; e
 | `d` (list) | remove the selected agent once it's done; its worktree stays, and the lead is told |
 | `pgup` / `pgdn` | scroll the lead (or the agent when the list is focused) |
 | `esc` | back |
+| `alt+v` | paste an image from the clipboard (`ctrl+v` too where the terminal passes it on); a dragged-in image path works as well |
 | `ctrl+s` | setup |
 | `ctrl+c` | quit (asks again if agents are running, then stops them) |
 | click | an agent selects it, again opens it fullscreen; the fullscreen title closes it; a pane or the input focuses it |

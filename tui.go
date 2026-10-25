@@ -32,6 +32,7 @@ type model struct {
 	quitArmed        bool
 	setup            *setupForm
 	input            textinput.Model
+	images           []string // clipboard images of this session, shown as [Image #n] in the input
 	mvp, svp         viewport.Model
 	w, h             int
 	status           string
@@ -334,6 +335,19 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// Windows Terminal handles ctrl+v itself and sends nothing for an image, so alt+v is the reliable key.
+	if key := k.String(); key == "ctrl+v" || key == "alt+v" {
+		if path, ok := clipboardImage(filepath.Join(m.runDir, "images")); ok {
+			m.images = append(m.images, path)
+			m.input.SetValue(m.input.Value() + fmt.Sprintf("[Image #%d] ", len(m.images)))
+			m.input.CursorEnd()
+			m.status = "image attached: " + filepath.Base(path)
+			return m, nil
+		} else if key == "alt+v" {
+			m.status = "no image on the clipboard"
+			return m, nil
+		}
+	}
 	if k.Type == tea.KeyEnter {
 		return m, m.submit()
 	}
@@ -345,20 +359,21 @@ func (m *model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 // submit sends the input to the lead, or to the agent being messaged.
 func (m *model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
+	sent := m.expandImages(text)
 	if text == "" {
 		return nil
 	}
 	if t := m.target; t != nil {
 		if t.running {
-			m.hold(t, "the user", text)
+			m.hold(t, "the user", sent)
 		} else {
 			t.lines = append(t.lines, Line{Kind: "you", Text: text})
-			if err := t.start(text, "", nil, m.logPath(t)); err != nil {
+			if err := t.start(sent, "", nil, m.logPath(t)); err != nil {
 				m.status = "could not start " + t.name + ": " + err.Error()
 				return nil
 			}
 		}
-		m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user sent agent %q this message directly:\n%s", t.name, text))
+		m.notes = append(m.notes, fmt.Sprintf("[agent-watch] The user sent agent %q this message directly:\n%s", t.name, sent))
 		m.target = nil
 		m.setFocusList(false)
 	} else {
@@ -366,7 +381,7 @@ func (m *model) submit() tea.Cmd {
 		if m.lead.running {
 			m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "queued until the lead's turn ends"})
 		}
-		m.toLead(text)
+		m.toLead(sent)
 		m.dirty = true
 	}
 	m.input.SetValue("")
