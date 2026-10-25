@@ -21,8 +21,6 @@ type setupForm struct {
 	pick  int                  // the highlighted model in it
 }
 
-var efforts = []string{"", "low", "medium", "high", "xhigh", "max"}
-
 // field is one setup row: text is typed or cycled through choices, toggle is switched, action runs on enter/space.
 type field struct {
 	label   string

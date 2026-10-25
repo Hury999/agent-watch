@@ -105,9 +105,10 @@ func (a *agentState) start(prompt, system string, env []string, logPath string) 
 		}()
 		sc := bufio.NewScanner(stdout)
 		sc.Buffer(make([]byte, 64*1024), 64<<20)
+		var st stream // one per turn
 		for sc.Scan() {
 			fmt.Fprintf(log, "%s\n", sc.Bytes())
-			if lines, d := parse(a.cfg.CLI, sc.Bytes()); len(lines) > 0 || d != (Delta{}) {
+			if lines, d := parse(a.cfg.CLI, sc.Bytes(), &st); len(lines) > 0 || d != (Delta{}) {
 				for i := range lines {
 					lines[i].Arg = relative(lines[i].Arg, a.dir)
 					if lines[i].Kind == "out" {

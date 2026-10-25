@@ -35,7 +35,15 @@ type Config struct {
 	Agents []Agent `json:"agents"`
 }
 
-var clis = []string{"claude", "opencode"}
+var clis = []string{"claude", "opencode", "codex", "agy"}
+
+// cliEfforts are the reasoning efforts each CLI takes when its model's own aren't known; "" is its default.
+var cliEfforts = map[string][]string{
+	"claude":   {"", "low", "medium", "high", "xhigh", "max"},
+	"opencode": {"", "low", "medium", "high", "xhigh", "max"},
+	"codex":    {"", "minimal", "low", "medium", "high", "xhigh"},
+	"agy":      {"", "low", "medium", "high", "xhigh", "max"},
+}
 
 // defaultConfig has one agent per CLI with its default account and model, enabled if it's installed,
 // and Claude Opus as the lead when Claude is installed.
@@ -191,11 +199,18 @@ func (c Config) check() string {
 			return "agent names must be lowercase letters, digits and dashes: " + a.Name
 		case seen[a.Name]:
 			return "two agents are named " + a.Name
+		case !slices.Contains(clis, a.CLI):
+			return a.Name + ": the cli must be one of " + strings.Join(clis, ", ")
+		case a.CLI == "agy" && a.Data != "":
+			return a.Name + ": agy agents can't use another account yet; leave account empty"
 		}
 		seen[a.Name] = true
 	}
-	if !slices.Contains(clis, c.Lead.CLI) {
-		return "the lead's cli must be claude or opencode"
+	switch {
+	case !slices.Contains(clis, c.Lead.CLI):
+		return "the lead's cli must be one of " + strings.Join(clis, ", ")
+	case c.Lead.CLI == "agy" && c.Lead.Data != "":
+		return "an agy lead can't use another account yet; leave account empty"
 	}
 	return ""
 }

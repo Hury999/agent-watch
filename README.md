@@ -10,7 +10,7 @@ Claude Code and opencode can both lead or work, on any account and model, so Cla
 
 ## Quick start
 
-**1. Have at least one agent CLI installed and logged in:** [Claude Code](https://claude.com/claude-code) (`claude`) and/or [opencode](https://opencode.ai) (`opencode`), plus `git`.
+**1. Have at least one agent CLI installed and logged in:** [Claude Code](https://claude.com/claude-code) (`claude`), [opencode](https://opencode.ai) (`opencode`), [Codex](https://github.com/openai/codex) (`codex`) or [Antigravity](https://antigravity.google/docs/cli) (`agy`), plus `git`.
 
 **2. Install** a [release](https://github.com/n-delic/agent-watch/releases) for Linux or macOS:
 
@@ -32,7 +32,7 @@ ln -s "$PWD/agent-watch" ~/.local/bin/aw
 
 (`~/.local/bin` must be on your `PATH`.)
 
-On Windows there is no release yet; build it with Go and put the executable on your `PATH`:
+On Windows, download the `windows_amd64` (or `arm64`) zip from the release, unzip it and put `agent-watch.exe` on your `PATH`, copied as `aw.exe` for the short name. Or build it with Go:
 
 ```powershell
 git clone https://github.com/n-delic/agent-watch; cd agent-watch
@@ -73,9 +73,9 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 | Field | |
 |---|---|
 | name | what you and the lead call it, e.g. `work` |
-| cli | `claude` or `opencode` |
-| account | empty for the CLI's default login. Another opencode account: the path of its database (e.g. `~/.local/share/opencode/work.db`, run with `--standalone`). Another Claude account: its config dir (e.g. `~/.claude-work`, as `CLAUDE_CONFIG_DIR`). |
-| model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), or Claude's. Effort then offers only that model's levels. |
+| cli | `claude`, `opencode`, `codex` or `agy` |
+| account | empty for the CLI's default login. Another opencode account: the path of its database (e.g. `~/.local/share/opencode/work.db`, run with `--standalone`). Another Claude account: its config dir (e.g. `~/.claude-work`, as `CLAUDE_CONFIG_DIR`). Another Codex account: its home (`CODEX_HOME`). agy: only its default login for now. |
+| model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), agy's (`agy models`), or Claude's; Codex can't list its models, so type its model name. Effort then offers only that model's levels. |
 | lead may use it | whether the lead can put it to work |
 
 The lead has its own cli, account, model and effort, separate from the agents: changing an agent never changes the lead. A fresh setup makes Claude Opus the lead: the idea is Opus's judgment on cheap agents' work. **may edit files** (off by default) gives it edit tools for small fixes, merges and housekeeping; a project file can switch it on with `"lead": {"edit": true}`. The setup is saved to `~/.config/agent-watch/config.json`.
@@ -131,10 +131,12 @@ Download the new release, or `git pull && go build -o agent-watch .`. Releases a
 
 ## Limits
 
-- Linux and macOS only.
+- Linux, macOS and Windows (amd64 and arm64).
 - Agents run with full permissions (`--auto` / `bypassPermissions`), which is why the lead gives each its own worktree.
-- Claude's token counts arrive at the end of each of its turns; opencode's update after every step.
-- Not yet supported: Codex, local model servers.
+- Claude's and Codex's token counts arrive at the end of each of their turns; opencode's and agy's update after every step.
+- Codex and agy report no limits or spend in non-interactive runs, so the header shows none for them.
+- A Codex or agy lead can always edit files (neither CLI can hold back edits and still run commands); without **may edit files** only its instructions keep it from editing.
+- Not yet supported: local model servers, another agy account.
 
 ## License
 

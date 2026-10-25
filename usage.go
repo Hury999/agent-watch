@@ -87,6 +87,9 @@ func (m *model) usageLine() string {
 			label = sAccent.Render("lead") + " "
 		}
 		key := accountKey(a)
+		if a.CLI == "codex" || a.CLI == "agy" {
+			continue // neither reports its limits or spend in non-interactive runs
+		}
 		if a.CLI == "claude" {
 			if l := m.limits[key]; l != nil {
 				reset := ""

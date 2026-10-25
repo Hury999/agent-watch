@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,10 @@ func TestParse(t *testing.T) {
 			{Kind: "tool", Text: "write", Arg: "/work/oc/out.txt"}, {Kind: "text", Text: "finished"}},
 		"claude": {{Kind: "tool", Text: "Bash", Arg: "cat note.txt"}, {Kind: "tool", Text: "Write", Arg: "/work/cl/out.txt"},
 			{Kind: "out", Text: "hello"}, {Kind: "text", Text: "finished"}},
+		"codex": {{Kind: "tool", Text: "shell", Arg: "cat note.txt"}, {Kind: "out", Text: "hello"},
+			{Kind: "tool", Text: "shell", Arg: `printf 'done' > out.txt`}, {Kind: "text", Text: "finished"}},
+		"agy": {{Kind: "tool", Text: "run_command", Arg: "cat note.txt"}, {Kind: "out", Text: "hello"},
+			{Kind: "tool", Text: "write_file", Arg: "/work/out.txt"}, {Kind: "text", Text: "finished."}},
 	} {
 		f, err := os.Open("testdata/" + kind + ".jsonl")
 		if err != nil {
@@ -31,12 +36,14 @@ func TestParse(t *testing.T) {
 		}
 		var got []Line
 		var sum Delta
+		var st stream
 		sc := bufio.NewScanner(f)
 		sc.Buffer(nil, 1<<20)
 		for sc.Scan() {
-			lines, d := parse(kind, sc.Bytes())
+			lines, d := parse(kind, sc.Bytes(), &st)
 			got = append(got, lines...)
 			sum.Cost, sum.In, sum.Out = sum.Cost+d.Cost, sum.In+d.In, sum.Out+d.Out
+			sum.Session = cmp.Or(d.Session, sum.Session)
 			if d.Limits != nil {
 				sum.Limits = d.Limits
 			}
@@ -51,8 +58,12 @@ func TestParse(t *testing.T) {
 		if i < len(want) {
 			t.Errorf("%s: missing %+v in %+v", kind, want[i], got)
 		}
-		if sum.Cost <= 0 || sum.In <= 0 || sum.Out <= 0 {
-			t.Errorf("%s: totals %+v, want cost and tokens > 0", kind, sum)
+		paid := kind == "claude" || kind == "opencode" // codex and agy runs are on a subscription: no cost
+		if sum.Cost <= 0 && paid || sum.In <= 0 || sum.Out <= 0 {
+			t.Errorf("%s: totals %+v, want tokens (and a cost for claude and opencode) > 0", kind, sum)
+		}
+		if (kind == "codex" || kind == "agy") && sum.Session == "" {
+			t.Errorf("%s: no session id picked up, so its next turn couldn't resume", kind)
 		}
 		if kind == "claude" && (sum.Limits == nil || sum.Limits.Five != 0.42 || sum.Limits.Seven != 0.52 || sum.Limits.FiveReset == 0) {
 			t.Errorf("claude limits %+v, want 5h 0.42 and 7d 0.52 with reset times", sum.Limits)
@@ -378,7 +389,7 @@ func TestParseOpencodeError(t *testing.T) {
 		`{"type":"error","error":{"type":"unknown","message":"Transport: socket closed"}}`:                                                      "Transport: socket closed",
 		`{"type":"error","error":{"name":"APIError","data":{"message":"rate limited"}}}`:                                                        "APIError: rate limited",
 	} {
-		if lines, _ := parse("opencode", []byte(raw)); len(lines) != 1 || lines[0].Kind != "err" || lines[0].Text != want {
+		if lines, _ := parse("opencode", []byte(raw), &stream{}); len(lines) != 1 || lines[0].Kind != "err" || lines[0].Text != want {
 			t.Errorf("parse(%s) = %+v, want err %q", raw, lines, want)
 		}
 	}
@@ -438,5 +449,29 @@ func TestRemoveAgent(t *testing.T) {
 	}
 	if m.handle(request{Op: "send", Name: "scout", Prompt: "hi"}) != "error: no agent named scout" {
 		t.Error("the removed agent can still be messaged")
+	}
+}
+
+// codex and agy start sessions themselves and resume them by the id they announced; the prompt goes last.
+func TestCommandCodexAgy(t *testing.T) {
+	for _, tc := range []struct {
+		a             Agent
+		session, want string
+	}{
+		{Agent{CLI: "codex", Model: "gpt-x", Effort: "high"}, "", `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -m gpt-x -c model_reasoning_effort="high" hi`},
+		{Agent{CLI: "codex"}, "th1", "codex exec resume --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox th1 hi"},
+		{Agent{CLI: "codex", Effort: `x"; evil="1`}, "", "codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox hi"},
+		{Agent{CLI: "agy", Model: "gemini-x", Effort: "low"}, "", "agy --output-format stream-json --dangerously-skip-permissions --model gemini-x --effort low -p hi"},
+		{Agent{CLI: "agy"}, "c1", "agy --output-format stream-json --dangerously-skip-permissions --conversation c1 -p hi"},
+	} {
+		if got := strings.Join(command(tc.a, tc.session, tc.session == "", "hi", "", "/w", false).Args, " "); got != tc.want {
+			t.Errorf("got  %s\nwant %s", got, tc.want)
+		}
+	}
+	if newSession("codex") != "" || newSession("agy") != "" {
+		t.Errorf("codex and agy must start without a session id: they assign their own")
+	}
+	if e := (Config{Lead: Lead{CLI: "agy", Data: "/x"}, Agents: []Agent{{Name: "a", CLI: "claude"}}}).check(); e == "" {
+		t.Errorf("an agy lead on another account passed the check")
 	}
 }

@@ -147,6 +147,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.lines = append(a.lines, msg.lines...)
 		a.cost, a.turnCost = a.cost+d.Cost, a.turnCost+d.Cost
 		a.in, a.out, a.turnIn, a.turnOut = a.in+d.In, a.out+d.Out, a.turnIn+d.In, a.turnOut+d.Out
+		if d.Session != "" {
+			a.session = d.Session // codex and agy name their session in their first turn
+		}
 		if d.Limits != nil {
 			m.limits[accountKey(a.cfg)] = d.Limits
 		}
@@ -244,7 +247,7 @@ func (m *model) flushLead() {
 }
 
 const (
-	noEditRule = "**Never edit project files yourself.** You have no edit tools on purpose. If an agent's work is wrong, that agent fixes it. Only the user can change this rule (in the setup)."
+	noEditRule = "**Never edit project files yourself.** The user hasn't allowed it, and depending on your CLI you may have no edit tools at all. If an agent's work is wrong, that agent fixes it. Only the user can change this rule (in the setup)."
 	editRule   = "**You may edit files, but keep it small.** The user lets you make fixes of a line or two that a feedback round isn't worth, resolve merge conflicts, and do housekeeping (docs, config). Feature work and anything substantial still goes to agents, and when an agent's work is wrong, it fixes it: give it feedback instead of fixing it yourself. Say in your report what you edited."
 )
 

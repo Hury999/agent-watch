@@ -18,19 +18,20 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./... && go test ./...
       - name: Build
-        # No Windows: stopping agents relies on Unix process groups.
         run: |
           mkdir dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os=${target%/*} arch=${target#*/}
             dir=agent-watch_${GITHUB_REF_NAME}_${os}_${arch}
+            exe=agent-watch
+            [ "$os" = windows ] && exe=agent-watch.exe
             mkdir "$dir"
             GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath \
-              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "$dir/agent-watch" .
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "$dir/$exe" .
             cp LICENSE README.md "$dir/"
-            tar -czf "dist/$dir.tar.gz" "$dir"
+            if [ "$os" = windows ]; then zip -qr "dist/$dir.zip" "$dir"; else tar -czf "dist/$dir.tar.gz" "$dir"; fi
           done
-          cd dist && sha256sum *.tar.gz > checksums.txt
+          cd dist && sha256sum * > checksums.txt
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

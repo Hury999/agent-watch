@@ -18,7 +18,7 @@ Go isn't on every PATH here; it may live in `/usr/local/go/bin`. Keep `go.mod`'s
 |---|---|
 | `main.go` | flags (`-c`, `-r`, `-v`, `-h`); anything else goes to `cli` |
 | `config.go` | `Config`: the `Lead` (its own cli/account/model/effort) and the `Agents` list (types, any number of agents each); a project's `.agent-watch.json` on top (`withProject`); colors; `accountKey` |
-| `agent.go` | `command` builds one turn for `claude` or `opencode`; `parse` turns their JSON output into `Line`s and a `Delta` (cost, tokens, Claude's limits) |
+| `agent.go` | `command` builds one turn for `claude`, `opencode`, `codex` or `agy`; `parse` turns their JSON output into `Line`s and a `Delta` (cost, tokens, Claude's limits) |
 | `run.go` | `agentState.start/stop`; the request files behind `aw spawn/send/stop`; `handle` validates them |
 | `tui.go` | the model, keys, mouse, layout, views |
 | `look.go` | colors, Claude Code style transcript (`⏺`, `⎿`), markdown via glamour, spinner, `panel` |
@@ -42,7 +42,10 @@ All of these were real bugs. Each has a test or a comment; keep both.
 - **Signals and child processes:** agents run in their own process group and are stopped by killing that group. On Unix that is `Setpgid` plus `SIGTERM` to the group (`proc_unix.go`); on Windows it is `CREATE_NEW_PROCESS_GROUP` plus `taskkill /T /F` (`proc_windows.go`).
 - **Session ids:** Claude wants a v4 UUID; opencode wants its own shape, `ses_` + 12 hex + 14 base62 (`newSession`). Any other shape and opencode's free models answer `403 FreeTierError`.
 - **A hung provider is silent.** opencode retries a dead model every 15 minutes without printing anything, so an agent whose output shows nothing for `stallAfter` (10m) is stopped and the lead is told. `opencode-go/beam-free` hangs like this; `opencode/beam-free` works.
-- **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
+- **Codex and agy name their own sessions.** `newSession` gives them ""; the id comes back in their first turn's output (Codex `thread.started`, agy `init`) as `Delta.Session`, and later turns resume it (`codex exec resume <id>`, `agy --conversation <id>`). Neither has a system-prompt flag, so the lead's instructions go in front of its first prompt.
+- **agy's `result` usage covers the whole conversation**, not the turn: tokens are summed from each step's usage. Its text arrives in pieces per step (`stream`), and its `--mode plan` runs no commands at all, so it's no use for a lead.
+- **Codex effort goes into TOML** (`-c model_reasoning_effort="..."`): only words from `cliEfforts["codex"]` may reach it.
+- **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Codex uses `CODEX_HOME=<dir>`; agy has none yet; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
 - **glamour's dark style keeps `##` before headings** and colors inline code red; `markdown` overrides both. The user cares how agent markdown looks.
 - **The lead has no edit tools by default** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent): its job is to brief and verify, not to fix agents' code. Only the user's **may edit files** setting (`Lead.Edit`) gives them back, along with the small-fixes rule (`editRule`). Keep `--append-system-prompt` right after `--allowedTools`: the tool list takes several values and would swallow a prompt that followed it.
 
@@ -61,4 +64,4 @@ All of these were real bugs. Each has a test or a comment; keep both.
 
 ## Releasing
 
-Push a version tag: `git tag v0.3.0 && git push origin v0.3.0`. `.github/workflows/release.yml` tests, builds Linux and macOS (amd64, arm64) with `-X main.version=<tag>`, and publishes the archives and `checksums.txt`.
+Push a version tag: `git tag v0.3.0 && git push origin v0.3.0`. `.github/workflows/release.yml` tests, builds Linux, macOS and Windows (amd64, arm64; Windows as zip) with `-X main.version=<tag>`, and publishes the archives and `checksums.txt`.

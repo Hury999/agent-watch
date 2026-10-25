@@ -43,8 +43,23 @@ var claudeModels = []modelInfo{
 	{"claude-sonnet-5-5", "", claudeEfforts}, {"claude-haiku-5-5", "", claudeEfforts},
 }
 
-// fetchModels asks opencode for an account's models, in the background.
+// fetchModels asks opencode (or agy) for an account's models, in the background.
 func fetchModels(a Agent) tea.Cmd {
+	if a.CLI == "agy" {
+		return func() tea.Msg {
+			out, err := exec.Command("agy", "models").Output()
+			var list []modelInfo
+			for _, line := range strings.Split(string(out), "\n") {
+				if slug, name, ok := strings.Cut(line, "\t"); ok { // "<slug>\t<name>"
+					list = append(list, modelInfo{ID: slug, Price: name})
+				}
+			}
+			if err == nil && len(list) == 0 {
+				err = fmt.Errorf("agy models listed nothing")
+			}
+			return modelsMsg{accountKey(a), list, err}
+		}
+	}
 	return func() tea.Msg {
 		env, args := account(a)
 		cmd := exec.Command("opencode", append([]string{"api", "model.list"}, args...)...)
@@ -81,8 +96,11 @@ func fetchModels(a Agent) tea.Cmd {
 
 // listFor is what's known of an agent's models; missing means not fetched yet.
 func (f *setupForm) listFor(a Agent) (modelList, bool) {
-	if a.CLI == "claude" {
+	switch a.CLI {
+	case "claude":
 		return modelList{list: claudeModels}, true
+	case "codex":
+		return modelList{}, true // codex can't list its models: the picker takes what's typed
 	}
 	l, ok := f.known[accountKey(a)]
 	return l, ok
@@ -118,5 +136,5 @@ func (f *setupForm) effortChoices(a Agent) []string {
 			return append([]string{""}, mi.Variants...)
 		}
 	}
-	return efforts
+	return cliEfforts[a.CLI]
 }

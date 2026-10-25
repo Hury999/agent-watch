@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -28,6 +29,13 @@ type Delta struct {
 	Cost    float64
 	In, Out int64
 	Limits  *Limits // claude only: the account's rate limit windows
+	Session string  // codex and agy: the session id the CLI assigned, to resume it next turn
+}
+
+// stream is what parsing one turn remembers between lines: agy sends its text in pieces.
+type stream struct {
+	texts map[int]string // agy: text so far, per step
+	tools map[int]bool   // agy: steps whose tool call was shown
 }
 
 // Limits is how much of Claude's 5-hour and 7-day windows is used (0..1) and when each resets (unix seconds).
@@ -39,6 +47,9 @@ type Limits struct {
 // newSession makes a session id: claude wants a UUID, opencode its own shape, "ses_" + 12 hex + 14 base62.
 // opencode's free tier refuses any other shape with a 403 FreeTierError.
 func newSession(cli string) string {
+	if cli == "codex" || cli == "agy" {
+		return "" // they make their own; parse picks it up from the first turn (Delta.Session)
+	}
 	b := make([]byte, 16)
 	rand.Read(b)
 	if cli == "claude" {
@@ -63,6 +74,8 @@ func account(a Agent) (env, args []string) {
 		return nil, nil
 	case a.CLI == "claude":
 		return []string{"CLAUDE_CONFIG_DIR=" + expand(a.Data)}, nil
+	case a.CLI == "codex":
+		return []string{"CODEX_HOME=" + expand(a.Data)}, nil
 	}
 	return []string{"OPENCODE_DB=" + expand(a.Data)}, []string{"--standalone"}
 }
@@ -97,6 +110,43 @@ func command(a Agent, session string, first bool, prompt, system, dir string, ed
 		} else {
 			args = append(args, "--permission-mode", "bypassPermissions")
 		}
+	} else if a.CLI == "codex" {
+		// shortcut: codex can't keep a lead from editing and still let it run git and aw, so its no-edit rule is
+		// only in its instructions; give the lead the sandbox's read-only mode if codex ever allows writable roots there.
+		args = append(args, "exec")
+		if session != "" {
+			args = append(args, "resume")
+		}
+		args = append(args, "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox")
+		for _, img := range images {
+			args = append(args, "-i", img)
+		}
+		if a.Model != "" {
+			args = append(args, "-m", a.Model)
+		}
+		if slices.Contains(cliEfforts["codex"], a.Effort) && a.Effort != "" { // a known word only: it goes into TOML
+			args = append(args, "-c", `model_reasoning_effort="`+a.Effort+`"`)
+		}
+		if session != "" {
+			args = append(args, session)
+		} else if system != "" {
+			prompt = system + "\n\n---\n\n" + prompt
+		}
+	} else if a.CLI == "agy" {
+		// agy can't be kept from editing either (its plan mode runs no commands at all, so a lead couldn't work).
+		args = append(args, "--output-format", "stream-json", "--dangerously-skip-permissions")
+		if a.Model != "" {
+			args = append(args, "--model", a.Model)
+		}
+		if slices.Contains(cliEfforts["agy"], a.Effort) && a.Effort != "" {
+			args = append(args, "--effort", a.Effort)
+		}
+		if session != "" {
+			args = append(args, "--conversation", session)
+		} else if system != "" {
+			prompt = system + "\n\n---\n\n" + prompt
+		}
+		args = append(args, "-p") // the prompt follows it; agy has no flag for images, so their paths stay in the prompt
 	} else {
 		args = append(append([]string{"run"}, args...), "--session", session, "--auto", "--format", "json") // flags only work after "run"
 		for _, img := range images {
@@ -136,14 +186,172 @@ func interrupt(a Agent, session string) {
 }
 
 // parse turns one line of an agent's JSON output into display lines and what it adds to the totals.
-func parse(cli string, raw []byte) ([]Line, Delta) {
+// st carries what a turn's earlier lines left behind; start one per turn.
+func parse(cli string, raw []byte, st *stream) ([]Line, Delta) {
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, Delta{}
 	}
-	if cli == "claude" {
+	switch cli {
+	case "claude":
 		return parseClaude(raw)
+	case "codex":
+		return parseCodex(raw)
+	case "agy":
+		return parseAgy(raw, st)
 	}
 	return parseOpencode(raw)
+}
+
+// parseCodex reads `codex exec --json`: a thread id, then items as they start and complete, and usage per turn.
+func parseCodex(raw []byte) ([]Line, Delta) {
+	var e struct {
+		Type     string
+		ThreadID string `json:"thread_id"`
+		Message  string
+		Error    struct{ Message string }
+		Usage    struct {
+			Input     int64 `json:"input_tokens"` // the cached ones included
+			Output    int64 `json:"output_tokens"`
+			Reasoning int64 `json:"reasoning_output_tokens"`
+		}
+		Item struct {
+			Type, Text, Command, Tool, Message string
+			Output                             string `json:"aggregated_output"`
+			ExitCode                           *int   `json:"exit_code"`
+			Changes                            []struct{ Path, Kind string }
+		}
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return []Line{{Kind: "info", Text: string(raw)}}, Delta{}
+	}
+	it := e.Item
+	switch e.Type {
+	case "thread.started":
+		return nil, Delta{Session: e.ThreadID}
+	case "turn.completed":
+		return nil, Delta{In: e.Usage.Input, Out: e.Usage.Output + e.Usage.Reasoning}
+	case "turn.failed":
+		return []Line{{Kind: "err", Text: e.Error.Message}}, Delta{}
+	case "error":
+		return []Line{{Kind: "err", Text: e.Message}}, Delta{}
+	case "item.started":
+		switch it.Type {
+		case "command_execution":
+			return []Line{toolLine("shell", map[string]any{"command": unwrapShell(it.Command)})}, Delta{}
+		case "mcp_tool_call":
+			return []Line{{Kind: "tool", Text: it.Tool}}, Delta{}
+		}
+	case "item.completed":
+		switch it.Type {
+		case "agent_message":
+			return []Line{{Kind: "text", Text: strings.TrimSpace(it.Text)}}, Delta{}
+		case "reasoning":
+			if t := strings.TrimSpace(it.Text); t != "" {
+				return []Line{{Kind: "think", Text: t}}, Delta{}
+			}
+		case "command_execution":
+			lines := outLines(it.Output)
+			if it.ExitCode != nil && *it.ExitCode != 0 {
+				lines = append(lines, Line{Kind: "err", Text: fmt.Sprintf("exit code %d", *it.ExitCode)})
+			}
+			return lines, Delta{}
+		case "file_change":
+			var lines []Line
+			for _, c := range it.Changes {
+				lines = append(lines, Line{Kind: "tool", Text: cmp.Or(c.Kind, "edit"), Arg: c.Path})
+			}
+			return lines, Delta{}
+		case "error":
+			return []Line{{Kind: "err", Text: it.Message}}, Delta{}
+		}
+	}
+	return nil, Delta{}
+}
+
+// unwrapShell shows `/bin/bash -lc 'cat x'` as `cat x`.
+func unwrapShell(c string) string {
+	if rest, ok := strings.CutPrefix(c, "/bin/bash -lc "); ok && len(rest) >= 2 && (rest[0] == '\'' || rest[0] == '"') && rest[len(rest)-1] == rest[0] {
+		return rest[1 : len(rest)-1]
+	}
+	return c
+}
+
+// parseAgy reads agy's stream-json: an init with the conversation id, then step updates. Text arrives in pieces,
+// gathered per step until it's DONE; usage comes per step (the result's covers the whole conversation).
+func parseAgy(raw []byte, st *stream) ([]Line, Delta) {
+	var e struct {
+		Event          string
+		ConversationID string `json:"conversation_id"`
+		Message        string
+		StepUpdate     struct {
+			StepIndex int    `json:"step_index"`
+			State     string `json:"state"`
+			StepType  string `json:"step_type"`
+			TextDelta string `json:"text_delta"`
+			ToolName  string `json:"tool_name"`
+			ToolInfo  struct {
+				Name       string
+				Parameters map[string]any
+				Output     string
+			} `json:"tool_info"`
+			Usage struct {
+				Input     int64 `json:"input_tokens"`
+				Output    int64 `json:"output_tokens"`
+				Thinking  int64 `json:"thinking_tokens"`
+				CacheRead int64 `json:"cache_read_tokens"`
+			}
+		} `json:"step_update"`
+		Result struct{ Status, Error string }
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return []Line{{Kind: "info", Text: string(raw)}}, Delta{}
+	}
+	switch e.Event {
+	case "init":
+		return nil, Delta{Session: e.ConversationID}
+	case "result":
+		if e.Result.Status != "SUCCESS" {
+			return []Line{{Kind: "err", Text: cmp.Or(e.Result.Error, "agy: "+e.Result.Status)}}, Delta{}
+		}
+		return nil, Delta{}
+	case "error":
+		return []Line{{Kind: "err", Text: e.Message}}, Delta{}
+	case "step_update":
+	default:
+		return nil, Delta{}
+	}
+	if st.texts == nil {
+		st.texts, st.tools = map[int]string{}, map[int]bool{}
+	}
+	s, done := e.StepUpdate, e.StepUpdate.State == "DONE"
+	var d Delta
+	if done {
+		d = Delta{In: s.Usage.Input + s.Usage.CacheRead, Out: s.Usage.Output + s.Usage.Thinking}
+	}
+	var lines []Line
+	switch s.StepType {
+	case "agent_response", "planner_response", "thinking":
+		st.texts[s.StepIndex] += s.TextDelta
+		if t := strings.TrimSpace(st.texts[s.StepIndex]); done && t != "" {
+			delete(st.texts, s.StepIndex)
+			kind := "text"
+			if s.StepType == "thinking" {
+				kind = "think"
+			}
+			lines = append(lines, Line{Kind: kind, Text: t})
+		}
+	case "tool":
+		if !st.tools[s.StepIndex] {
+			st.tools[s.StepIndex] = true
+			lines = append(lines, toolLine(cmp.Or(s.ToolInfo.Name, s.ToolName), s.ToolInfo.Parameters))
+		}
+		if done {
+			out := strings.ReplaceAll(s.ToolInfo.Output, "\r\n", "\n")
+			out, _ = strings.CutPrefix(out, "Command exited with code 0.\n\nCommand output:\n")
+			lines = append(lines, outLines(out)...)
+		}
+	}
+	return lines, d
 }
 
 func parseOpencode(raw []byte) ([]Line, Delta) {
@@ -296,7 +504,7 @@ func resultText(c any) string {
 }
 
 func toolLine(name string, in map[string]any) Line {
-	for _, k := range []string{"command", "file_path", "filePath", "path", "pattern", "url", "query", "description"} {
+	for _, k := range []string{"command", "file_path", "filePath", "path", "pattern", "url", "query", "description", "CommandLine", "Path"} {
 		if s, ok := in[k].(string); ok && s != "" {
 			return Line{Kind: "tool", Text: name, Arg: clip(oneLine(s), 160)}
 		}
