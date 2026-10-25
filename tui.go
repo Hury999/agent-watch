@@ -36,7 +36,7 @@ type model struct {
 	mvp, svp         viewport.Model
 	w, h             int
 	status           string
-	limits           map[string]*Limits // per Claude account (accountKey): its rate limit windows, from its latest turn
+	limits           map[string]*Limits // per account (accountKey): its usage windows, from its latest report
 	spend            map[string]spend
 	spendAt          time.Time
 	models           map[string]modelList // per account, for the setup's model picker
@@ -166,8 +166,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dirty = true
 		m.finished(msg.a, msg.code)
 		m.refresh()
-		if msg.a.cfg.CLI == "opencode" {
+		switch msg.a.cfg.CLI {
+		case "opencode":
 			return m, fetchSpend(msg.a.cfg)
+		case "codex":
+			return m, fetchCodexLimits(msg.a.cfg, msg.a.session)
+		}
+	case limitsMsg:
+		if msg.l != nil {
+			m.limits[msg.account] = msg.l
 		}
 	case modelsMsg:
 		m.models[msg.account] = modelList{list: msg.list, err: msg.err}
@@ -364,6 +371,9 @@ func (m *model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
 	sent := m.expandImages(text)
 	if text == "" {
+		if m.target == nil && m.lead.running && len(m.queue) > 0 {
+			m.lead.stop("interrupted to send your message now") // finished() then sends the queue as its next turn
+		}
 		return nil
 	}
 	if t := m.target; t != nil {
@@ -382,7 +392,7 @@ func (m *model) submit() tea.Cmd {
 	} else {
 		m.lead.lines = append(m.lead.lines, Line{Kind: "you", Text: text})
 		if m.lead.running {
-			m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "queued until the lead's turn ends"})
+			m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "queued until the lead's turn ends · press enter again to interrupt it and send now"})
 		}
 		m.toLead(sent)
 		m.dirty = true

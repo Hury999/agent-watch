@@ -64,7 +64,7 @@ What you see:
 - Transcripts in Claude Code style (`⏺` messages and tool calls, `⎿` output), with agents' markdown rendered: headings, lists, tables, code.
 - The agent list shows what each agent is doing right now: its latest tool call, or the start of its reply.
 - A live spinner per agent with elapsed time, tokens (↑ in ↓ out) and cost; every turn ends with how long it took. An agent that shows nothing for a minute says so; after 10 minutes it's stopped and the lead is told (a hung model would otherwise sit there until the 2-hour timeout).
-- A header with what the run has cost so far, each Claude account's 5-hour and 7-day usage (from its own rate limit reports) and each opencode account's spend today and over 7 days (`opencode stats`; opencode has no limits API).
+- A header with what the run has cost so far and the lead's usage, plus the selected agent's when it's on another account: Claude's 5-hour and 7-day windows (from its rate limit reports), Codex's plan windows (from its session files), opencode's spend today and over 7 days (`opencode stats`; it has no limits API), and for agy, which reports nothing, the tokens this run used, or its quota and reset time once it runs out.
 
 ## Agents
 
@@ -101,7 +101,7 @@ The setup screen edits the global config and shows what the project overrides; e
 
 | Key | |
 |---|---|
-| `enter` | send to the lead (or to the agent you're messaging) |
+| `enter` | send to the lead (or to the agent you're messaging). While the lead is busy your message waits for its turn to end; `enter` again on the empty input interrupts it and sends now. |
 | `tab` | switch between input and agent list |
 | `↑↓` | select an agent (in the list) |
 | `enter` (list) | selected agent fullscreen |
@@ -134,7 +134,7 @@ Download the new release, or `git pull && go build -o agent-watch .`. Releases a
 - Linux, macOS and Windows (amd64 and arm64).
 - Agents run with full permissions (`--auto` / `bypassPermissions`), which is why the lead gives each its own worktree.
 - Claude's and Codex's token counts arrive at the end of each of their turns; opencode's and agy's update after every step.
-- Codex and agy report no limits or spend in non-interactive runs, so the header shows none for them.
+- Codex's limits update when one of its turns ends; agy shows only this run's tokens until its quota runs out.
 - A Codex or agy lead can always edit files (neither CLI can hold back edits and still run commands); without **may edit files** only its instructions keep it from editing.
 - Not yet supported: local model servers, another agy account.
 

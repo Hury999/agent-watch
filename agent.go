@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ type Line struct {
 type Delta struct {
 	Cost    float64
 	In, Out int64
-	Limits  *Limits // claude only: the account's rate limit windows
+	Limits  *Limits // the account's usage windows, when the CLI reports them
 	Session string  // codex and agy: the session id the CLI assigned, to resume it next turn
 }
 
@@ -38,10 +39,14 @@ type stream struct {
 	tools map[int]bool   // agy: steps whose tool call was shown
 }
 
-// Limits is how much of Claude's 5-hour and 7-day windows is used (0..1) and when each resets (unix seconds).
-type Limits struct {
-	Five, Seven           float64
-	FiveReset, SevenReset int64
+// Limits are an account's usage windows, as its CLI reports them.
+type Limits struct{ Windows []Window }
+
+// Window is one usage window: how much of it is used (0..1) and when it resets (unix seconds, 0 if unknown).
+type Window struct {
+	Label string // 5h, 7d, 30d, or quota
+	Used  float64
+	Reset int64
 }
 
 // newSession makes a session id: claude wants a UUID, opencode its own shape, "ses_" + 12 hex + 14 base62.
@@ -268,6 +273,71 @@ func parseCodex(raw []byte) ([]Line, Delta) {
 	return nil, Delta{}
 }
 
+// agyQuota reads "Individual quota reached ... Resets in 14h36m37s": the only usage agy ever reports.
+func agyQuota(err string) *Limits {
+	m := resetsIn.FindStringSubmatch(err)
+	if !strings.Contains(err, "quota") || m == nil {
+		return nil
+	}
+	d, perr := time.ParseDuration(m[1])
+	if perr != nil {
+		return nil
+	}
+	return &Limits{[]Window{{"quota", 1, time.Now().Add(d).Unix()}}}
+}
+
+var resetsIn = regexp.MustCompile(`Resets in ((?:\d+[hms])+)`)
+
+// codexLimits reads an account's rate limit windows from a Codex session's file, which has them after every turn
+// (its --json output doesn't).
+func codexLimits(a Agent, session string) *Limits {
+	home := expand(cmp.Or(a.Data, "~/.codex"))
+	files, _ := filepath.Glob(filepath.Join(home, "sessions", "*", "*", "*", "rollout-*-"+session+".jsonl"))
+	if session == "" || len(files) == 0 {
+		return nil
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		return nil
+	}
+	type window struct {
+		UsedPercent   float64 `json:"used_percent"`
+		WindowMinutes int     `json:"window_minutes"`
+		ResetsAt      int64   `json:"resets_at"`
+	}
+	var last *Limits
+	for _, line := range strings.Split(string(b), "\n") {
+		var e struct {
+			Payload struct {
+				Type       string
+				RateLimits *struct{ Primary, Secondary *window } `json:"rate_limits"`
+			}
+		}
+		if json.Unmarshal([]byte(line), &e) != nil || e.Payload.Type != "token_count" || e.Payload.RateLimits == nil {
+			continue
+		}
+		l := &Limits{}
+		for _, w := range []*window{e.Payload.RateLimits.Primary, e.Payload.RateLimits.Secondary} {
+			if w != nil {
+				l.Windows = append(l.Windows, Window{windowLabel(w.WindowMinutes), w.UsedPercent / 100, w.ResetsAt})
+			}
+		}
+		last = l
+	}
+	return last
+}
+
+// windowLabel names a window by its length: 300 minutes is "5h", 10080 "7d".
+func windowLabel(minutes int) string {
+	switch {
+	case minutes > 0 && minutes%1440 == 0:
+		return fmt.Sprintf("%dd", minutes/1440)
+	case minutes > 0 && minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
 // unwrapShell shows `/bin/bash -lc 'cat x'` as `cat x`.
 func unwrapShell(c string) string {
 	if rest, ok := strings.CutPrefix(c, "/bin/bash -lc "); ok && len(rest) >= 2 && (rest[0] == '\'' || rest[0] == '"') && rest[len(rest)-1] == rest[0] {
@@ -311,7 +381,7 @@ func parseAgy(raw []byte, st *stream) ([]Line, Delta) {
 		return nil, Delta{Session: e.ConversationID}
 	case "result":
 		if e.Result.Status != "SUCCESS" {
-			return []Line{{Kind: "err", Text: cmp.Or(e.Result.Error, "agy: "+e.Result.Status)}}, Delta{}
+			return []Line{{Kind: "err", Text: cmp.Or(e.Result.Error, "agy: "+e.Result.Status)}}, Delta{Limits: agyQuota(e.Result.Error)}
 		}
 		return nil, Delta{}
 	case "error":
@@ -447,7 +517,7 @@ func parseClaude(raw []byte) ([]Line, Delta) {
 		return nil, d
 	case "rate_limit_event":
 		w := e.RateLimitInfo.UnifiedWindows
-		return nil, Delta{Limits: &Limits{w.FiveHour.Utilization, w.SevenDay.Utilization, w.FiveHour.ResetsAt, w.SevenDay.ResetsAt}}
+		return nil, Delta{Limits: &Limits{[]Window{{"5h", w.FiveHour.Utilization, w.FiveHour.ResetsAt}, {"7d", w.SevenDay.Utilization, w.SevenDay.ResetsAt}}}}
 	case "assistant", "user":
 	default:
 		return nil, Delta{}

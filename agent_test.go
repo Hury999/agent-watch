@@ -65,7 +65,8 @@ func TestParse(t *testing.T) {
 		if (kind == "codex" || kind == "agy") && sum.Session == "" {
 			t.Errorf("%s: no session id picked up, so its next turn couldn't resume", kind)
 		}
-		if kind == "claude" && (sum.Limits == nil || sum.Limits.Five != 0.42 || sum.Limits.Seven != 0.52 || sum.Limits.FiveReset == 0) {
+		if kind == "claude" && (sum.Limits == nil || len(sum.Limits.Windows) != 2 || sum.Limits.Windows[0] != (Window{"5h", 0.42, sum.Limits.Windows[0].Reset}) ||
+			sum.Limits.Windows[1].Label != "7d" || sum.Limits.Windows[1].Used != 0.52 || sum.Limits.Windows[0].Reset == 0) {
 			t.Errorf("claude limits %+v, want 5h 0.42 and 7d 0.52 with reset times", sum.Limits)
 		}
 	}
@@ -473,5 +474,83 @@ func TestCommandCodexAgy(t *testing.T) {
 	}
 	if e := (Config{Lead: Lead{CLI: "agy", Data: "/x"}, Agents: []Agent{{Name: "a", CLI: "claude"}}}).check(); e == "" {
 		t.Errorf("an agy lead on another account passed the check")
+	}
+}
+
+// Codex keeps its limits in its session file, agy only says so when its quota runs out.
+func TestCodexAndAgyLimits(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "2026", "10", "25")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "rollout-2026-10-25T14-59-14-th1.jsonl"), []byte(
+		`{"type":"session_meta","payload":{"id":"th1"}}`+"\n"+
+			`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":5.0,"window_minutes":300,"resets_at":1795517620},"secondary":{"used_percent":40.0,"window_minutes":43200,"resets_at":1795600000}}}}`+"\n"+
+			`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":7.5,"window_minutes":300,"resets_at":1795517620},"secondary":null}}}`+"\n"), 0o644)
+	l := codexLimits(Agent{CLI: "codex", Data: home}, "th1")
+	if l == nil || len(l.Windows) != 1 || l.Windows[0] != (Window{"5h", 0.075, 1795517620}) {
+		t.Errorf("codex limits %+v, want the last report: 5h at 7.5%%", l)
+	}
+	if codexLimits(Agent{CLI: "codex", Data: home}, "nope") != nil {
+		t.Errorf("limits for a session that has no file")
+	}
+	if windowLabel(10080) != "7d" || windowLabel(43200) != "30d" || windowLabel(300) != "5h" {
+		t.Errorf("window labels: %s %s %s", windowLabel(10080), windowLabel(43200), windowLabel(300))
+	}
+
+	raw := `{"event":"result","result":{"status":"ERROR","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 14h36m37s."}}`
+	lines, d := parse("agy", []byte(raw), &stream{})
+	if len(lines) != 1 || lines[0].Kind != "err" || d.Limits == nil || d.Limits.Windows[0].Label != "quota" || d.Limits.Windows[0].Used != 1 {
+		t.Fatalf("agy quota error: %+v %+v", lines, d.Limits)
+	}
+	if left := time.Until(time.Unix(d.Limits.Windows[0].Reset, 0)); left < 14*time.Hour || left > 15*time.Hour {
+		t.Errorf("agy quota resets in %s, want about 14h36m", left)
+	}
+}
+
+// The header shows the lead's account always, and the selected agent's only when it's another one.
+func TestUsageLine(t *testing.T) {
+	lead := &agentState{name: "lead", cfg: Agent{Name: "claude", CLI: "claude"}}
+	same := &agentState{name: "a", cfg: Agent{Name: "claude", CLI: "claude"}}
+	gem := &agentState{name: "b", cfg: Agent{Name: "gm", CLI: "agy"}, in: 1200, out: 300}
+	m := &model{lead: lead, workers: []*agentState{same, gem}, limits: map[string]*Limits{
+		accountKey(lead.cfg): {[]Window{{"5h", 0.5, 0}, {"7d", 0.25, 0}}}}}
+	plain := xansi.Strip(m.usageLine())
+	if !strings.Contains(plain, "lead 5h") || strings.Contains(plain, "│") {
+		t.Errorf("same account as the lead: %q, want just the lead's", plain)
+	}
+	m.sel = 1
+	plain = xansi.Strip(m.usageLine())
+	if !strings.Contains(plain, "lead 5h") || !strings.Contains(plain, "gm ↑ 1.2k ↓ 300 this run") {
+		t.Errorf("agy agent selected: %q, want the lead's limits and gm's tokens", plain)
+	}
+}
+
+// Enter on an empty input while the lead is busy and a message is queued interrupts the lead to send it now.
+func TestSendNow(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	ownGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Skip("no sleep command:", err)
+	}
+	defer cmd.Process.Kill()
+	m := &model{lead: &agentState{name: "lead", running: true, cmd: cmd}, queue: []string{"stop, use the other API"}}
+	m.submit()
+	if m.lead.stopReason == "" {
+		t.Errorf("an empty enter with a queued message didn't interrupt the lead")
+	}
+	m2 := &model{lead: &agentState{name: "lead", running: true}}
+	m2.submit()
+	if m2.lead.stopReason != "" {
+		t.Errorf("an empty enter with nothing queued interrupted the lead")
+	}
+}
+
+func TestDur(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		12 * time.Second: "12s", 90 * time.Second: "1m 30s", 90 * time.Minute: "1h 30m", 716*time.Hour + 50*time.Minute: "29d 20h",
+	} {
+		if got := dur(d); got != want {
+			t.Errorf("dur(%s) = %q, want %q", d, got, want)
+		}
 	}
 }

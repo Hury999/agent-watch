@@ -78,35 +78,56 @@ func (m *model) refreshSpend() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// usageLine is the header's right side: one group per account in use.
+// usageLine is the header's right side: the lead's account always, and the selected agent's when it's another one.
 func (m *model) usageLine() string {
-	var parts []string
-	for _, a := range m.usedAccounts() {
-		label := badge(a.Name) + " "
-		if a.Name == "lead" {
-			label = sAccent.Render("lead") + " "
-		}
-		key := accountKey(a)
-		if a.CLI == "codex" || a.CLI == "agy" {
-			continue // neither reports its limits or spend in non-interactive runs
-		}
-		if a.CLI == "claude" {
-			if l := m.limits[key]; l != nil {
-				reset := ""
-				if l.FiveReset > 0 {
-					reset = sDim.Render(" ↻" + dur(time.Until(time.Unix(l.FiveReset, 0)).Round(time.Minute)))
-				}
-				parts = append(parts, label+sDim.Render("5h ")+meter(l.Five)+reset+sDim.Render("  7d ")+meter(l.Seven))
-			} else {
-				parts = append(parts, label+sDim.Render("limits after its first turn"))
-			}
-			continue
-		}
-		if s, ok := m.spend[key]; ok {
-			parts = append(parts, label+sDim.Render("today ")+sBold.Render(fmt.Sprintf("$%.2f", s.today))+sDim.Render(" · 7d ")+sBold.Render(fmt.Sprintf("$%.2f", s.week)))
-		} else {
-			parts = append(parts, label+sDim.Render("…"))
+	parts := []string{sAccent.Render("lead") + " " + m.accountUsage(m.lead.cfg)}
+	if len(m.workers) > 0 {
+		if w := m.workers[m.sel].cfg; accountKey(w) != accountKey(m.lead.cfg) {
+			parts = append(parts, badge(w.Name)+" "+m.accountUsage(w))
 		}
 	}
 	return strings.Join(parts, sDim.Render("  │  "))
+}
+
+// accountUsage is what's known of an account's usage: its CLI's limit windows (Claude, Codex, an agy quota hit),
+// opencode's spend, or else (agy) the tokens this run used on it.
+func (m *model) accountUsage(a Agent) string {
+	key := accountKey(a)
+	if l := m.limits[key]; l != nil && len(l.Windows) > 0 {
+		var ws []string
+		for i, w := range l.Windows {
+			s := sDim.Render(w.Label+" ") + meter(w.Used)
+			if i == 0 && w.Reset > 0 {
+				s += sDim.Render(" ↻" + dur(time.Until(time.Unix(w.Reset, 0)).Round(time.Minute)))
+			}
+			ws = append(ws, s)
+		}
+		return strings.Join(ws, "  ")
+	}
+	switch a.CLI {
+	case "opencode":
+		if s, ok := m.spend[key]; ok {
+			return sDim.Render("today ") + sBold.Render(fmt.Sprintf("$%.2f", s.today)) + sDim.Render(" · 7d ") + sBold.Render(fmt.Sprintf("$%.2f", s.week))
+		}
+		return sDim.Render("…")
+	case "claude", "codex":
+		return sDim.Render("limits after its first turn")
+	}
+	var in, out int64
+	for _, s := range append([]*agentState{m.lead}, m.workers...) {
+		if accountKey(s.cfg) == key {
+			in, out = in+s.in, out+s.out
+		}
+	}
+	return sDim.Render(fmt.Sprintf("↑ %s ↓ %s this run", tokens(in), tokens(out)))
+}
+
+type limitsMsg struct {
+	account string // accountKey
+	l       *Limits
+}
+
+// fetchCodexLimits reads a Codex session's limits once its turn has ended, in the background.
+func fetchCodexLimits(a Agent, session string) tea.Cmd {
+	return func() tea.Msg { return limitsMsg{accountKey(a), codexLimits(a, session)} }
 }
