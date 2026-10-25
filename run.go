@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -137,7 +136,7 @@ func (a *agentState) stop(reason string) {
 		return
 	}
 	a.stopReason = reason
-	syscall.Kill(-a.cmd.Process.Pid, syscall.SIGTERM)
+	killTree(a.cmd)
 	interrupt(a.cfg, a.session)
 }
 
