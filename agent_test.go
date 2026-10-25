@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -402,7 +401,7 @@ func TestRelative(t *testing.T) {
 func TestStalledAgentIsStopped(t *testing.T) {
 	m := &model{runDir: t.TempDir(), lead: &agentState{name: "lead"}, spendAt: time.Now()}
 	sleep := exec.Command("sleep", "60")
-	sleep.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	ownGroup(sleep)
 	if err := sleep.Start(); err != nil {
 		t.Fatal(err)
 	}

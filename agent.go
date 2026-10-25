@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -119,7 +118,7 @@ func command(a Agent, session string, first bool, prompt, system, dir string, ed
 	cmd.Dir = dir
 	// opencode takes its directory from $PWD, which an explicit Env would leave stale.
 	cmd.Env = append(append(os.Environ(), env...), "PWD="+dir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // so stop can kill the whole tree
+	ownGroup(cmd) // so stop can kill the whole tree
 	return cmd
 }
 

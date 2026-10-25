@@ -39,7 +39,7 @@ All of these were real bugs. Each has a test or a comment; keep both.
 - **opencode hangs on an open non-tty stdin.** Agent processes get no stdin (nil = /dev/null). Never give them the TUI's.
 - **opencode reads its directory from `$PWD`**, not the process cwd. `command` sets `PWD` to the workdir.
 - **opencode's shared background service keeps running a session after its client dies.** Stopping or timing out a default-account opencode turn must also call `session.interrupt` (`interrupt`). `--standalone` (another account) dies with its client.
-- **Signals and child processes:** agents run in their own process group (`Setpgid`) and are stopped with a signal to the group. That's why there's no Windows build.
+- **Signals and child processes:** agents run in their own process group and are stopped by killing that group. On Unix that is `Setpgid` plus `SIGTERM` to the group (`proc_unix.go`); on Windows it is `CREATE_NEW_PROCESS_GROUP` plus `taskkill /T /F` (`proc_windows.go`).
 - **Session ids:** Claude wants a v4 UUID; opencode wants its own shape, `ses_` + 12 hex + 14 base62 (`newSession`). Any other shape and opencode's free models answer `403 FreeTierError`.
 - **A hung provider is silent.** opencode retries a dead model every 15 minutes without printing anything, so an agent whose output shows nothing for `stallAfter` (10m) is stopped and the lead is told. `opencode-go/beam-free` hangs like this; `opencode/beam-free` works.
 - **Another account:** opencode uses `OPENCODE_DB=<file>` plus `--standalone`; Claude uses `CLAUDE_CONFIG_DIR=<dir>` (`account`).
