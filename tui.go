@@ -245,7 +245,15 @@ func (m *model) flushLead() {
 	if m.lead.running || len(m.queue) == 0 {
 		return
 	}
-	msg := strings.Join(append(m.notes, m.queue...), "\n\n")
+	var first, rest []string // a slash command (a skill, a custom command) only works at the very start of the prompt
+	for _, s := range append(m.notes, m.queue...) {
+		if strings.HasPrefix(s, "/") {
+			first = append(first, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	msg := strings.Join(append(first, rest...), "\n\n")
 	m.notes, m.queue = nil, nil
 	m.lead.edits = m.cfg.Lead.Edit
 	if err := m.lead.start(msg, m.systemPrompt(), []string{"AGENT_WATCH_DIR=" + m.runDir}, m.logPath(m.lead)); err != nil {
@@ -376,6 +384,11 @@ func (m *model) submit() tea.Cmd {
 		}
 		return nil
 	}
+	if m.target == nil && strings.HasPrefix(text, "/") && m.command(text) {
+		m.input.SetValue("")
+		m.refresh()
+		return nil
+	}
 	if t := m.target; t != nil {
 		if t.running {
 			m.hold(t, "the user", sent)
@@ -400,6 +413,50 @@ func (m *model) submit() tea.Cmd {
 	m.input.SetValue("")
 	m.refresh()
 	return nil
+}
+
+// command runs agent-watch's own slash commands. The CLIs only see one turn at a time, so their /model or /clear
+// would die with it. Anything else (a skill, a custom command) goes to the lead as typed.
+func (m *model) command(text string) bool {
+	name, arg, _ := strings.Cut(text, " ")
+	arg = strings.TrimSpace(arg)
+	info := func(s string) { m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: s}) }
+	switch name {
+	case "/model":
+		if arg == "" {
+			info("the lead runs " + describe(m.lead.cfg) + " · /model <name> changes it for this run")
+			return true
+		}
+		m.lead.cfg.Model = arg
+		if arg == "default" {
+			m.lead.cfg.Model = ""
+		}
+		info("the lead now runs " + describe(m.lead.cfg) + " for this run; the setup (ctrl+s) keeps the default")
+	case "/effort":
+		effort := arg
+		if arg == "default" {
+			effort = ""
+		}
+		if levels := cliEfforts[m.lead.cfg.CLI]; arg == "" || !slices.Contains(levels, effort) {
+			info("/effort takes one of: default " + strings.Join(levels[1:], " "))
+			return true
+		}
+		m.lead.cfg.Effort = effort
+		info("the lead now runs " + describe(m.lead.cfg) + " for this run")
+	case "/clear":
+		if m.lead.running {
+			info("the lead is mid-turn; /clear when it's done")
+			return true
+		}
+		m.lead = &agentState{name: "lead", dir: m.cwd, cfg: m.lead.cfg, session: newSession(m.lead.cfg.CLI),
+			lines: []Line{{Kind: "info", Text: "a new conversation with the lead; the agents carry on"}}}
+	case "/help":
+		info("/model <name> · /effort <level> · /clear starts a new lead conversation · anything else, like a skill or a custom command, goes to the lead as typed")
+	default:
+		return false
+	}
+	m.dirty = true
+	return true
 }
 
 func (m *model) setFocusList(on bool) {

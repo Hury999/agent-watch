@@ -575,3 +575,23 @@ func TestLeadChangeKeepsConversation(t *testing.T) {
 		t.Errorf("switching CLI must start a new session: %+v", m.lead)
 	}
 }
+
+// agent-watch's own slash commands change the lead for the run; others go to the lead first in its prompt.
+func TestSlashCommands(t *testing.T) {
+	m := &model{lead: &agentState{name: "lead", cfg: Agent{Name: "claude", CLI: "claude", Model: "opus"}, session: "s1", lines: []Line{{Kind: "you", Text: "old"}}}}
+	if !m.command("/model sonnet") || m.lead.cfg.Model != "sonnet" || m.lead.session != "s1" {
+		t.Errorf("/model: %+v", m.lead.cfg)
+	}
+	if !m.command("/effort high") || m.lead.cfg.Effort != "high" {
+		t.Errorf("/effort high: %q", m.lead.cfg.Effort)
+	}
+	if !m.command("/effort turbo") || m.lead.cfg.Effort != "high" {
+		t.Errorf("/effort with an unknown level changed it to %q", m.lead.cfg.Effort)
+	}
+	if !m.command("/clear") || m.lead.session == "s1" || m.lead.lines[0].Text == "old" || m.lead.cfg.Model != "sonnet" {
+		t.Errorf("/clear should start a new conversation with the same settings: %+v", m.lead)
+	}
+	if m.command("/ponytail-help") {
+		t.Errorf("a skill was taken as agent-watch's command")
+	}
+}

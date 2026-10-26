@@ -118,6 +118,8 @@ The setup screen edits the global config and shows what the project overrides; e
 
 Mouse capture means selecting text needs `shift` + drag in most terminals.
 
+Slash commands for the lead: `/model <name>` and `/effort <level>` change it for the rest of the run without losing the conversation, `/clear` starts a new conversation (the agents carry on), `/help` lists them. Anything else, like a skill or a custom command (`/review`), goes to the lead as typed; a Claude lead runs those.
+
 ## How it works
 
 - The lead gets `lead.md` as its instructions and drives agents with `aw spawn|send|stop`. Those commands hand a request file to the running app, which checks it against your setup and starts the agent.
