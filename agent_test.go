@@ -554,3 +554,24 @@ func TestDur(t *testing.T) {
 		}
 	}
 }
+
+// Changing the lead's model or effort keeps its conversation; only another CLI or account starts a new one.
+func TestLeadChangeKeepsConversation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := Config{Lead: Lead{CLI: "claude", Model: "opus", Effort: "high"}, Agents: []Agent{{Name: "claude", CLI: "claude"}}}
+	m := &model{cfg: cfg, global: cfg, lead: &agentState{name: "lead", cfg: cfg.lead(), session: "uuid-1", turns: 3,
+		lines: []Line{{Kind: "you", Text: "earlier"}}}}
+	save := func(edit func(*Config)) {
+		m.setup = m.newSetup()
+		edit(&m.setup.cfg)
+		m.setupKey(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	save(func(c *Config) { c.Lead.Effort, c.Lead.Model = "low", "sonnet" })
+	if m.lead.session != "uuid-1" || m.lead.turns != 3 || m.lead.lines[0].Text != "earlier" || m.lead.cfg.Model != "sonnet" || m.lead.cfg.Effort != "low" {
+		t.Errorf("model/effort change: session %q turns %d model %q effort %q", m.lead.session, m.lead.turns, m.lead.cfg.Model, m.lead.cfg.Effort)
+	}
+	save(func(c *Config) { c.Lead.CLI = "codex" })
+	if m.lead.session == "uuid-1" || m.lead.cfg.CLI != "codex" {
+		t.Errorf("switching CLI must start a new session: %+v", m.lead)
+	}
+}

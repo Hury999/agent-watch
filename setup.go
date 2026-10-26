@@ -109,13 +109,20 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if f.err = cfg.check(); f.err != "" {
 			break
 		}
-		if cfg.lead() != m.cfg.lead() {
+		if l := cfg.lead(); l != m.lead.cfg {
 			if m.lead.running {
 				f.err = "the lead is mid-turn; change it when it's done"
 				break
 			}
-			m.lead = &agentState{name: "lead", dir: m.cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI),
-				lines: []Line{{Kind: "info", Text: "new lead session: " + describe(cfg.lead())}}}
+			if accountKey(l) != accountKey(m.lead.cfg) {
+				// a session can't move to another CLI or login: only then does the lead start over
+				m.lead = &agentState{name: "lead", dir: m.cwd, cfg: l, session: newSession(l.CLI),
+					lines: []Line{{Kind: "info", Text: "new lead session: " + describe(l)}}}
+			} else {
+				// model and effort go with every turn, so the conversation carries on
+				m.lead.cfg = l
+				m.lead.lines = append(m.lead.lines, Line{Kind: "info", Text: "lead now runs " + describe(l)})
+			}
 		}
 		m.global, m.cfg = f.cfg, cfg
 		setColors(m.cfg)
