@@ -14,8 +14,8 @@ import (
 // Agent is one agent the lead can put to work: a CLI, an account and a model.
 type Agent struct {
 	Name    string `json:"name"`
-	CLI     string `json:"cli"`            // claude or opencode
-	Data    string `json:"data,omitempty"` // another account: opencode's database file or Claude's config dir; empty = the default one
+	CLI     string `json:"cli"`            // one of clis
+	Data    string `json:"data,omitempty"` // another account (opencode's database file, Claude's config dir, Codex's home); empty = the default one
 	Model   string `json:"model,omitempty"`
 	Effort  string `json:"effort,omitempty"`
 	Enabled bool   `json:"enabled"` // the lead may start it
@@ -33,16 +33,6 @@ type Lead struct {
 type Config struct {
 	Lead   Lead    `json:"lead"`
 	Agents []Agent `json:"agents"`
-}
-
-var clis = []string{"claude", "opencode", "codex", "agy"}
-
-// cliEfforts are the reasoning efforts each CLI takes when its model's own aren't known; "" is its default.
-var cliEfforts = map[string][]string{
-	"claude":   {"", "low", "medium", "high", "xhigh", "max"},
-	"opencode": {"", "low", "medium", "high", "xhigh", "max"},
-	"codex":    {"", "minimal", "low", "medium", "high", "xhigh"},
-	"agy":      {"", "low", "medium", "high", "xhigh", "max"},
 }
 
 // defaultConfig has one agent per CLI with its default account and model, enabled if it's installed,
@@ -201,16 +191,16 @@ func (c Config) check() string {
 			return "two agents are named " + a.Name
 		case !slices.Contains(clis, a.CLI):
 			return a.Name + ": the cli must be one of " + strings.Join(clis, ", ")
-		case a.CLI == "agy" && a.Data != "":
-			return a.Name + ": agy agents can't use another account yet; leave account empty"
+		case a.Data != "" && !multiAccount(a):
+			return a.Name + ": " + a.CLI + " can't use another account; leave account empty"
 		}
 		seen[a.Name] = true
 	}
 	switch {
 	case !slices.Contains(clis, c.Lead.CLI):
 		return "the lead's cli must be one of " + strings.Join(clis, ", ")
-	case c.Lead.CLI == "agy" && c.Lead.Data != "":
-		return "an agy lead can't use another account yet; leave account empty"
+	case c.Lead.Data != "" && !multiAccount(c.lead()):
+		return "the lead: " + c.Lead.CLI + " can't use another account; leave account empty"
 	}
 	return ""
 }
@@ -230,14 +220,6 @@ func describe(a Agent) string {
 	return a.Name + " " + model + "#" + a.Effort
 }
 
-// expand resolves a leading ~ in a data path.
-func expand(p string) string {
-	if home, err := os.UserHomeDir(); err == nil && (p == "~" || strings.HasPrefix(p, "~/")) {
-		return filepath.Join(home, p[1:])
-	}
-	return p
-}
-
 var palette = []lipgloss.Color{cBlue, cPurple, cGreen, cYellow, lipgloss.Color("#F778BA"), lipgloss.Color("#56D4DD")}
 
 // agentColors gives each agent the color of its place in the list, so editing an agent never recolors
@@ -249,6 +231,12 @@ func setColors(c Config) {
 	for i, a := range c.Agents {
 		agentColors[a.Name] = palette[i%len(palette)]
 	}
+}
+
+// multiAccount says whether an agent's CLI can use a login other than its default.
+func multiAccount(a Agent) bool {
+	_, ok := cliOf(a).Accounts()
+	return ok
 }
 
 // account identifies the login an agent uses: agents on the same one share its limits and spend.

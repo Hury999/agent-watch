@@ -82,7 +82,7 @@ func runTUI(resume string) error {
 	in.Placeholder = "message the lead…"
 	in.Focus()
 	m := &model{cfg: cfg, global: global, project: project, projectPath: projectPath, runDir: runDir, cwd: cwd, exe: exe, input: in, spend: map[string]spend{}, limits: map[string]*Limits{}, models: map[string]modelList{},
-		lead: &agentState{name: "lead", dir: cwd, cfg: cfg.lead(), session: newSession(cfg.lead().CLI)}}
+		lead: &agentState{name: "lead", dir: cwd, cfg: cfg.lead(), session: cliOf(cfg.lead()).NewSession()}}
 	if resume != "" {
 		r, err := loadRun(resume)
 		if err != nil {
@@ -166,12 +166,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dirty = true
 		m.finished(msg.a, msg.code)
 		m.refresh()
-		switch msg.a.cfg.CLI {
-		case "opencode":
-			return m, fetchSpend(msg.a.cfg)
-		case "codex":
-			return m, fetchCodexLimits(msg.a.cfg, msg.a.session)
-		}
+		return m, afterTurn(msg.a)
 	case limitsMsg:
 		if msg.l != nil {
 			m.limits[msg.account] = msg.l
@@ -437,7 +432,7 @@ func (m *model) command(text string) bool {
 		if arg == "default" {
 			effort = ""
 		}
-		if levels := cliEfforts[m.lead.cfg.CLI]; arg == "" || !slices.Contains(levels, effort) {
+		if levels := cliOf(m.lead.cfg).Efforts(); arg == "" || !slices.Contains(levels, effort) {
 			info("/effort takes one of: default " + strings.Join(levels[1:], " "))
 			return true
 		}
@@ -448,7 +443,7 @@ func (m *model) command(text string) bool {
 			info("the lead is mid-turn; /clear when it's done")
 			return true
 		}
-		m.lead = &agentState{name: "lead", dir: m.cwd, cfg: m.lead.cfg, session: newSession(m.lead.cfg.CLI),
+		m.lead = &agentState{name: "lead", dir: m.cwd, cfg: m.lead.cfg, session: cliOf(m.lead.cfg).NewSession(),
 			lines: []Line{{Kind: "info", Text: "a new conversation with the lead; the agents carry on"}}}
 	case "/help":
 		info("/model <name> · /effort <level> · /clear starts a new lead conversation · anything else, like a skill or a custom command, goes to the lead as typed")

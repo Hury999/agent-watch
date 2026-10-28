@@ -47,7 +47,7 @@ func main() {
 			}
 			resume = run
 		default:
-			os.Exit(cli(os.Args[1:]))
+			os.Exit(leadCLI(os.Args[1:]))
 		}
 	}
 	if err := runTUI(resume); err != nil {

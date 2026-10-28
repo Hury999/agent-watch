@@ -105,10 +105,13 @@ func (a *agentState) start(prompt, system string, env []string, logPath string) 
 		}()
 		sc := bufio.NewScanner(stdout)
 		sc.Buffer(make([]byte, 64*1024), 64<<20)
-		var st stream // one per turn
+		parse := cliOf(a.cfg).NewParser() // one per turn
 		for sc.Scan() {
 			fmt.Fprintf(log, "%s\n", sc.Bytes())
-			if lines, d := parse(a.cfg.CLI, sc.Bytes(), &st); len(lines) > 0 || d != (Delta{}) {
+			if strings.TrimSpace(string(sc.Bytes())) == "" {
+				continue
+			}
+			if lines, d := parse(sc.Bytes()); len(lines) > 0 || d != (Delta{}) {
 				for i := range lines {
 					lines[i].Arg = relative(lines[i].Arg, a.dir)
 					if lines[i].Kind == "out" {
@@ -138,7 +141,7 @@ func (a *agentState) stop(reason string) {
 	}
 	a.stopReason = reason
 	killTree(a.cmd)
-	interrupt(a.cfg, a.session)
+	cliOf(a.cfg).Interrupt(expand(a.cfg.Data), a.session)
 }
 
 // status says how the last turn ended.
@@ -178,7 +181,7 @@ func (m *model) handle(r request) string {
 		case strings.TrimSpace(r.Prompt) == "":
 			return "error: the brief on stdin is empty"
 		}
-		a = &agentState{name: r.Name, dir: r.Dir, cfg: cfg, session: newSession(cfg.CLI)}
+		a = &agentState{name: r.Name, dir: r.Dir, cfg: cfg, session: cliOf(cfg).NewSession()}
 	case "send":
 		switch {
 		case a == nil:
@@ -239,8 +242,8 @@ const usage = `usage: agent-watch                                open the TUI (s
        agent-watch send <name> < message
        agent-watch stop <name>`
 
-// cli is the lead's side: it hands a request to the running TUI and prints the answer.
-func cli(args []string) int {
+// leadCLI is the lead's side: it hands a request to the running TUI and prints the answer.
+func leadCLI(args []string) int {
 	var r request
 	switch {
 	case len(args) == 4 && args[0] == "spawn":

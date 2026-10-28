@@ -38,14 +38,6 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// withImages tells a CLI without an attach flag where to look.
-func withImages(prompt string, images []string) string {
-	if len(images) == 0 {
-		return prompt
-	}
-	return prompt + "\n\n(The message includes image file(s); look at them with the Read tool: " + strings.Join(images, ", ") + ")"
-}
-
 // clipboardImage saves the clipboard's image as a PNG in dir and returns its path; false if the
 // clipboard holds no image or the platform has no tool to read it.
 func clipboardImage(dir string) (string, bool) {

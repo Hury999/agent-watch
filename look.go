@@ -198,13 +198,13 @@ func render(lines []Line, w int) string {
 	prev := ""
 	for i := range lines {
 		l := &lines[i]
-		if l.rw != w {
-			l.r, l.rw = renderBlock(*l, prev, w), w
+		if l.RW != w {
+			l.R, l.RW = renderBlock(*l, prev, w), w
 		}
 		if i > 0 && l.Kind != "out" && !(l.Kind == "err" && (prev == "tool" || prev == "out")) {
 			b.WriteByte('\n') // a blank line between blocks, like Claude Code
 		}
-		b.WriteString(l.r)
+		b.WriteString(l.R)
 		b.WriteByte('\n')
 		prev = l.Kind
 	}

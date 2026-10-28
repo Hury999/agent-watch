@@ -1,13 +1,10 @@
 package main
 
-// Usage shown in the header: Claude's rate limit windows come with its output (parse);
-// opencode has no limits API, so for it we show spend from `opencode stats`.
+// Usage shown in the header, whatever each CLI reports (cli.CLI's Usage): limit windows, spend, or else
+// the tokens this run used.
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -24,23 +21,11 @@ type spendMsg struct {
 	ok      bool
 }
 
-func opencodeCost(a Agent, days int) (float64, error) {
-	env, args := account(a)
-	cmd := exec.Command("opencode", append([]string{"stats", "--json", "--days", fmt.Sprint(days)}, args...)...)
-	cmd.Env = append(os.Environ(), env...)
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	var s struct{ Cost float64 }
-	return s.Cost, json.Unmarshal(out, &s)
-}
-
-// fetchSpend asks opencode for an account's spend today and over the last 7 days, in the background.
+// fetchSpend asks a CLI for an account's spend today and over the last 7 days, in the background.
 func fetchSpend(a Agent) tea.Cmd {
 	return func() tea.Msg {
-		today, err1 := opencodeCost(a, 0)
-		week, err2 := opencodeCost(a, 7)
+		today, err1 := cliOf(a).Spend(expand(a.Data), 0)
+		week, err2 := cliOf(a).Spend(expand(a.Data), 7)
 		return spendMsg{accountKey(a), spend{today, week}, err1 == nil && err2 == nil}
 	}
 }
@@ -71,7 +56,7 @@ func (m *model) refreshSpend() tea.Cmd {
 	m.spendAt = time.Now()
 	var cmds []tea.Cmd
 	for _, a := range m.usedAccounts() {
-		if a.CLI == "opencode" {
+		if cliOf(a).Usage() == "spend" {
 			cmds = append(cmds, fetchSpend(a))
 		}
 	}
@@ -89,8 +74,8 @@ func (m *model) usageLine() string {
 	return strings.Join(parts, sDim.Render("  │  "))
 }
 
-// accountUsage is what's known of an account's usage: its CLI's limit windows (Claude, Codex, an agy quota hit),
-// opencode's spend, or else (agy) the tokens this run used on it.
+// accountUsage is what's known of an account's usage: its CLI's limit windows (or a quota it hit), its spend,
+// or else the tokens this run used on it.
 func (m *model) accountUsage(a Agent) string {
 	key := accountKey(a)
 	if l := m.limits[key]; l != nil && len(l.Windows) > 0 {
@@ -104,13 +89,13 @@ func (m *model) accountUsage(a Agent) string {
 		}
 		return strings.Join(ws, "  ")
 	}
-	switch a.CLI {
-	case "opencode":
+	switch cliOf(a).Usage() {
+	case "spend":
 		if s, ok := m.spend[key]; ok {
 			return sDim.Render("today ") + sBold.Render(fmt.Sprintf("$%.2f", s.today)) + sDim.Render(" · 7d ") + sBold.Render(fmt.Sprintf("$%.2f", s.week))
 		}
 		return sDim.Render("…")
-	case "claude", "codex":
+	case "limits":
 		return sDim.Render("limits after its first turn")
 	}
 	var in, out int64
@@ -127,7 +112,11 @@ type limitsMsg struct {
 	l       *Limits
 }
 
-// fetchCodexLimits reads a Codex session's limits once its turn has ended, in the background.
-func fetchCodexLimits(a Agent, session string) tea.Cmd {
-	return func() tea.Msg { return limitsMsg{accountKey(a), codexLimits(a, session)} }
+// afterTurn fetches what a CLI only reports once a turn has ended: its spend, or its limits (Codex), in the background.
+func afterTurn(a *agentState) tea.Cmd {
+	c, acct, session := cliOf(a.cfg), expand(a.cfg.Data), a.session
+	if c.Usage() == "spend" {
+		return fetchSpend(a.cfg)
+	}
+	return func() tea.Msg { return limitsMsg{accountKey(a.cfg), c.Limits(acct, session)} }
 }

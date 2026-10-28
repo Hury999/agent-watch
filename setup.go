@@ -11,14 +11,15 @@ import (
 )
 
 type setupForm struct {
-	cfg   Config // the global setup being edited
-	note  string // what the project file overrides, if there is one
-	row   int
-	err   string
-	known map[string]modelList // models per account, shared with the model so they're fetched once
-	open  bool                 // the model picker is showing under the current model row
-	query string               // what's typed into it
-	pick  int                  // the highlighted model in it
+	cfg      Config // the global setup being edited
+	note     string // what the project file overrides, if there is one
+	row      int
+	err      string
+	known    map[string]modelList // models per account, shared with the model so they're fetched once
+	accounts map[string][]string  // per CLI, the other logins found on this machine (~ for home)
+	open     bool                 // the model picker is showing under the current model row
+	query    string               // what's typed into it
+	pick     int                  // the highlighted model in it
 }
 
 // field is one setup row: text is typed or cycled through choices, toggle is switched, action runs on enter/space.
@@ -32,24 +33,32 @@ type field struct {
 	agent   int // index of the agent this row belongs to, -1 for none
 	head    bool
 	of      func() Agent // model rows: whose models to offer
+	clear   *string      // cli rows: the account, which belongs to the cli it was set for
 }
 
 func (f *setupForm) fields() []field {
 	c := &f.cfg
 	lead := func() Agent { return c.lead() }
-	fs := []field{
-		{label: "cli", text: &c.Lead.CLI, choices: clis, agent: -1},
-		{label: "account", text: &c.Lead.Data, empty: "default", agent: -1},
-		{label: "model", text: &c.Lead.Model, empty: "default", agent: -1, of: lead},
-		{label: "effort", text: &c.Lead.Effort, choices: f.effortChoices(c.lead()), agent: -1},
-		{label: "may edit files", toggle: &c.Lead.Edit, agent: -1},
+	// account rows only for a CLI that can use another login, a choice of those found on this machine
+	account := func(a Agent, data *string, agent int) []field {
+		if !multiAccount(a) {
+			return nil
+		}
+		return []field{{label: "account", text: data, choices: f.accountChoices(a), agent: agent}}
 	}
+	fs := []field{{label: "cli", text: &c.Lead.CLI, choices: clis, agent: -1, clear: &c.Lead.Data}}
+	fs = append(fs, account(c.lead(), &c.Lead.Data, -1)...)
+	fs = append(fs,
+		field{label: "model", text: &c.Lead.Model, empty: "default", agent: -1, of: lead},
+		field{label: "effort", text: &c.Lead.Effort, choices: f.effortChoices(c.lead()), agent: -1},
+		field{label: "may edit files", toggle: &c.Lead.Edit, agent: -1})
 	for i := range c.Agents {
 		a := &c.Agents[i]
 		fs = append(fs,
 			field{label: "name", text: &a.Name, agent: i, head: true},
-			field{label: "cli", text: &a.CLI, choices: clis, agent: i},
-			field{label: "account", text: &a.Data, empty: "default", agent: i},
+			field{label: "cli", text: &a.CLI, choices: clis, agent: i, clear: &a.Data})
+		fs = append(fs, account(*a, &a.Data, i)...)
+		fs = append(fs,
 			field{label: "model", text: &a.Model, empty: "default", agent: i, of: func() Agent { return *a }},
 			field{label: "effort", text: &a.Effort, choices: f.effortChoices(*a), agent: i},
 			field{label: "lead may use it", toggle: &a.Enabled, agent: i})
@@ -60,13 +69,29 @@ func (f *setupForm) fields() []field {
 			n++
 		}
 		c.Agents = append(c.Agents, Agent{Name: fmt.Sprint("agent-", n), CLI: "opencode", Enabled: true})
-		f.row = len(f.fields()) - 7 // its name row
+		f.row = slices.IndexFunc(f.fields(), func(fl field) bool { return fl.head && fl.agent == len(c.Agents)-1 })
 	}})
+}
+
+// accountChoices are the logins the setup offers an agent: its CLI's default, the others found on this
+// machine, and the one it has even if it wasn't found.
+func (f *setupForm) accountChoices(a Agent) []string {
+	choices := append([]string{""}, f.accounts[a.CLI]...)
+	if !slices.Contains(choices, a.Data) {
+		choices = append(choices, a.Data)
+	}
+	return choices
 }
 
 // newSetup opens the setup on the global config; the project's overrides are only shown.
 func (m *model) newSetup() *setupForm {
-	f := &setupForm{cfg: m.global, known: m.models}
+	f := &setupForm{cfg: m.global, known: m.models, accounts: map[string][]string{}}
+	for _, c := range allCLIs {
+		found, _ := c.Accounts()
+		for _, p := range found {
+			f.accounts[c.Name()] = append(f.accounts[c.Name()], tilde(p))
+		}
+	}
 	if o := overrides(m.project); o != "" {
 		f.note = "this project overrides " + o + " (" + tilde(m.projectPath) + ")"
 	}
@@ -116,7 +141,7 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			if accountKey(l) != accountKey(m.lead.cfg) {
 				// a session can't move to another CLI or login: only then does the lead start over
-				m.lead = &agentState{name: "lead", dir: m.cwd, cfg: l, session: newSession(l.CLI),
+				m.lead = &agentState{name: "lead", dir: m.cwd, cfg: l, session: cliOf(l).NewSession(),
 					lines: []Line{{Kind: "info", Text: "new lead session: " + describe(l)}}}
 			} else {
 				// model and effort go with every turn, so the conversation carries on
@@ -144,6 +169,9 @@ func (m *model) setupKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				step = len(cur.choices) - 1
 			}
 			*cur.text = cur.choices[(slices.Index(cur.choices, *cur.text)+step)%len(cur.choices)]
+			if cur.clear != nil {
+				*cur.clear = ""
+			}
 		case editable && k.String() == " ":
 			*cur.text += " "
 		}
@@ -252,12 +280,13 @@ func (f *setupForm) picker(cur field, w int) []string {
 func (f *setupForm) view(w, h int) string {
 	pw := min(w, 96)
 	var lines []string
-	cursor := 0
+	cursor, agents := 0, false
 	for i, fl := range f.fields() {
 		if i == 0 {
 			lines = append(lines, sBold.Render("Lead")+sDim.Render(" · the agent you talk to"))
 		}
-		if i == 5 {
+		if fl.agent >= 0 && !agents {
+			agents = true
 			lines = append(lines, "", sBold.Render("Agents")+sDim.Render(" · who the lead can put to work"))
 		}
 		if fl.head {
@@ -309,7 +338,7 @@ func (f *setupForm) view(w, h int) string {
 		}
 	}
 	help := []string{"", sDim.Render("empty model or account = the CLI's default · type on a model row to pick from its list"),
-		sDim.Render("another account: opencode → its .db file, claude → its config dir (~/.claude-work)")}
+		sDim.Render("account ←→ picks a login found here: opencode .db files, ~/.claude-*, ~/.codex-*")}
 	if f.note != "" {
 		help = append(help, sYellow.Render(xansi.Truncate("⚑ "+f.note, pw-4, "…")))
 	}

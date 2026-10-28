@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bufio"
-	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -15,62 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
-)
 
-// Real output of `opencode run --format json` and `claude -p --output-format stream-json` for the same task:
-// cat note.txt, write out.txt, reply "finished".
-func TestParse(t *testing.T) {
-	for kind, want := range map[string][]Line{
-		"opencode": {{Kind: "tool", Text: "shell", Arg: "cat note.txt"}, {Kind: "out", Text: "hello"},
-			{Kind: "tool", Text: "write", Arg: "/work/oc/out.txt"}, {Kind: "text", Text: "finished"}},
-		"claude": {{Kind: "tool", Text: "Bash", Arg: "cat note.txt"}, {Kind: "tool", Text: "Write", Arg: "/work/cl/out.txt"},
-			{Kind: "out", Text: "hello"}, {Kind: "text", Text: "finished"}},
-		"codex": {{Kind: "tool", Text: "shell", Arg: "cat note.txt"}, {Kind: "out", Text: "hello"},
-			{Kind: "tool", Text: "shell", Arg: `printf 'done' > out.txt`}, {Kind: "text", Text: "finished"}},
-		"agy": {{Kind: "tool", Text: "run_command", Arg: "cat note.txt"}, {Kind: "out", Text: "hello"},
-			{Kind: "tool", Text: "write_file", Arg: "/work/out.txt"}, {Kind: "text", Text: "finished."}},
-	} {
-		f, err := os.Open("testdata/" + kind + ".jsonl")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got []Line
-		var sum Delta
-		var st stream
-		sc := bufio.NewScanner(f)
-		sc.Buffer(nil, 1<<20)
-		for sc.Scan() {
-			lines, d := parse(kind, sc.Bytes(), &st)
-			got = append(got, lines...)
-			sum.Cost, sum.In, sum.Out = sum.Cost+d.Cost, sum.In+d.In, sum.Out+d.Out
-			sum.Session = cmp.Or(d.Session, sum.Session)
-			if d.Limits != nil {
-				sum.Limits = d.Limits
-			}
-		}
-		f.Close()
-		i := 0 // want must appear in order; a text only has to start with the wanted text
-		for _, l := range got {
-			if i < len(want) && l.Kind == want[i].Kind && strings.HasPrefix(l.Text, want[i].Text) && l.Arg == want[i].Arg {
-				i++
-			}
-		}
-		if i < len(want) {
-			t.Errorf("%s: missing %+v in %+v", kind, want[i], got)
-		}
-		paid := kind == "claude" || kind == "opencode" // codex and agy runs are on a subscription: no cost
-		if sum.Cost <= 0 && paid || sum.In <= 0 || sum.Out <= 0 {
-			t.Errorf("%s: totals %+v, want tokens (and a cost for claude and opencode) > 0", kind, sum)
-		}
-		if (kind == "codex" || kind == "agy") && sum.Session == "" {
-			t.Errorf("%s: no session id picked up, so its next turn couldn't resume", kind)
-		}
-		if kind == "claude" && (sum.Limits == nil || len(sum.Limits.Windows) != 2 || sum.Limits.Windows[0] != (Window{"5h", 0.42, sum.Limits.Windows[0].Reset}) ||
-			sum.Limits.Windows[1].Label != "7d" || sum.Limits.Windows[1].Used != 0.52 || sum.Limits.Windows[0].Reset == 0) {
-			t.Errorf("claude limits %+v, want 5h 0.42 and 7d 0.52 with reset times", sum.Limits)
-		}
-	}
-}
+	"github.com/n-delic/agent-watch/cli/agy"
+	"github.com/n-delic/agent-watch/cli/codex"
+)
 
 // Every block renders within the width, whatever the kind, and markdown loses its markup.
 func TestRender(t *testing.T) {
@@ -88,15 +33,6 @@ func TestRender(t *testing.T) {
 	}
 }
 
-func TestNewSession(t *testing.T) {
-	if s := newSession("claude"); !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(s) {
-		t.Errorf("claude session %q is not a v4 UUID", s)
-	}
-	if s := newSession("opencode"); !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(s) {
-		t.Errorf("opencode session %q is not in opencode's shape", s)
-	}
-}
-
 func TestCommand(t *testing.T) {
 	t.Setenv("PWD", "/somewhere/else")
 	for _, tc := range []struct {
@@ -110,7 +46,7 @@ func TestCommand(t *testing.T) {
 		{Agent{Name: "work", CLI: "opencode", Data: "/data/work.db"}, "OPENCODE_DB=/data/work.db", "--standalone", "--model"},
 		{Agent{Name: "claude-2", CLI: "claude", Data: "/cfg/two", Model: "opus"}, "CLAUDE_CONFIG_DIR=/cfg/two", "opus", "--standalone"},
 	} {
-		cmd := command(tc.a, newSession(tc.a.CLI), true, "hi", "", "/work/tree", false)
+		cmd := command(tc.a, cliOf(tc.a).NewSession(), true, "hi", "", "/work/tree", false)
 		env := cmd.Environ()
 		if !slices.Contains(env, tc.env) || slices.Contains(env, "PWD=/somewhere/else") {
 			t.Errorf("%s: env lacks %s or kept a stale PWD", tc.a.Name, tc.env)
@@ -246,9 +182,9 @@ func TestSendToRunningAgentIsQueued(t *testing.T) {
 func TestModelPicker(t *testing.T) {
 	cfg := Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{{Name: "work", CLI: "opencode", Model: "old/model", Effort: "xhigh"}}}
 	known := map[string]modelList{accountKey(cfg.Agents[0]): {list: []modelInfo{
-		{"opencode-go/deepseek-v4.1-flash", "$0.15/$0.6", []string{"low", "high", "max"}},
-		{"opencode/deepseek-v4.1-flash-free", "free", []string{"low", "high", "max"}},
-		{"opencode/glm-5.3-flash-free", "free", nil},
+		{ID: "opencode-go/deepseek-v4.1-flash", Price: "$0.15/$0.6", Variants: []string{"low", "high", "max"}},
+		{ID: "opencode/deepseek-v4.1-flash-free", Price: "free", Variants: []string{"low", "high", "max"}},
+		{ID: "opencode/glm-5.3-flash-free", Price: "free", Variants: nil},
 	}}}
 	m := &model{cfg: cfg, setup: &setupForm{cfg: cfg, known: known}}
 	f := m.setup
@@ -383,19 +319,6 @@ func TestLeadMayEdit(t *testing.T) {
 	}
 }
 
-// opencode's errors show their message, not the escaped response body that repeats it.
-func TestParseOpencodeError(t *testing.T) {
-	for raw, want := range map[string]string{
-		`{"type":"error","error":{"type":"provider.auth","message":"free tier only in OpenCode","status":403,"response":{"body":"{\"x\":1}"}}}`: "provider.auth: free tier only in OpenCode",
-		`{"type":"error","error":{"type":"unknown","message":"Transport: socket closed"}}`:                                                      "Transport: socket closed",
-		`{"type":"error","error":{"name":"APIError","data":{"message":"rate limited"}}}`:                                                        "APIError: rate limited",
-	} {
-		if lines, _ := parse("opencode", []byte(raw), &stream{}); len(lines) != 1 || lines[0].Kind != "err" || lines[0].Text != want {
-			t.Errorf("parse(%s) = %+v, want err %q", raw, lines, want)
-		}
-	}
-}
-
 func TestRelative(t *testing.T) {
 	for in, want := range map[string]string{
 		"/w/repo/a.go":                          "a.go",
@@ -469,41 +392,11 @@ func TestCommandCodexAgy(t *testing.T) {
 			t.Errorf("got  %s\nwant %s", got, tc.want)
 		}
 	}
-	if newSession("codex") != "" || newSession("agy") != "" {
+	if (codex.CLI{}).NewSession() != "" || (agy.CLI{}).NewSession() != "" {
 		t.Errorf("codex and agy must start without a session id: they assign their own")
 	}
 	if e := (Config{Lead: Lead{CLI: "agy", Data: "/x"}, Agents: []Agent{{Name: "a", CLI: "claude"}}}).check(); e == "" {
 		t.Errorf("an agy lead on another account passed the check")
-	}
-}
-
-// Codex keeps its limits in its session file, agy only says so when its quota runs out.
-func TestCodexAndAgyLimits(t *testing.T) {
-	home := t.TempDir()
-	dir := filepath.Join(home, "sessions", "2026", "10", "25")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "rollout-2026-10-25T14-59-14-th1.jsonl"), []byte(
-		`{"type":"session_meta","payload":{"id":"th1"}}`+"\n"+
-			`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":5.0,"window_minutes":300,"resets_at":1795517620},"secondary":{"used_percent":40.0,"window_minutes":43200,"resets_at":1795600000}}}}`+"\n"+
-			`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":7.5,"window_minutes":300,"resets_at":1795517620},"secondary":null}}}`+"\n"), 0o644)
-	l := codexLimits(Agent{CLI: "codex", Data: home}, "th1")
-	if l == nil || len(l.Windows) != 1 || l.Windows[0] != (Window{"5h", 0.075, 1795517620}) {
-		t.Errorf("codex limits %+v, want the last report: 5h at 7.5%%", l)
-	}
-	if codexLimits(Agent{CLI: "codex", Data: home}, "nope") != nil {
-		t.Errorf("limits for a session that has no file")
-	}
-	if windowLabel(10080) != "7d" || windowLabel(43200) != "30d" || windowLabel(300) != "5h" {
-		t.Errorf("window labels: %s %s %s", windowLabel(10080), windowLabel(43200), windowLabel(300))
-	}
-
-	raw := `{"event":"result","result":{"status":"ERROR","error":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 14h36m37s."}}`
-	lines, d := parse("agy", []byte(raw), &stream{})
-	if len(lines) != 1 || lines[0].Kind != "err" || d.Limits == nil || d.Limits.Windows[0].Label != "quota" || d.Limits.Windows[0].Used != 1 {
-		t.Fatalf("agy quota error: %+v %+v", lines, d.Limits)
-	}
-	if left := time.Until(time.Unix(d.Limits.Windows[0].Reset, 0)); left < 14*time.Hour || left > 15*time.Hour {
-		t.Errorf("agy quota resets in %s, want about 14h36m", left)
 	}
 }
 
@@ -513,7 +406,7 @@ func TestUsageLine(t *testing.T) {
 	same := &agentState{name: "a", cfg: Agent{Name: "claude", CLI: "claude"}}
 	gem := &agentState{name: "b", cfg: Agent{Name: "gm", CLI: "agy"}, in: 1200, out: 300}
 	m := &model{lead: lead, workers: []*agentState{same, gem}, limits: map[string]*Limits{
-		accountKey(lead.cfg): {[]Window{{"5h", 0.5, 0}, {"7d", 0.25, 0}}}}}
+		accountKey(lead.cfg): {Windows: []Window{{Label: "5h", Used: 0.5}, {Label: "7d", Used: 0.25}}}}}
 	plain := xansi.Strip(m.usageLine())
 	if !strings.Contains(plain, "lead 5h") || strings.Contains(plain, "│") {
 		t.Errorf("same account as the lead: %q, want just the lead's", plain)
@@ -593,5 +486,42 @@ func TestSlashCommands(t *testing.T) {
 	}
 	if m.command("/ponytail-help") {
 		t.Errorf("a skill was taken as agent-watch's command")
+	}
+}
+
+// The account row is a choice of the logins found, only for a CLI that can use another; changing the cli
+// drops the account, which belonged to the old one.
+func TestSetupAccounts(t *testing.T) {
+	cfg := Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{
+		{Name: "oc", CLI: "opencode", Data: "~/old.db"}, {Name: "gm", CLI: "agy"}}}
+	f := &setupForm{cfg: cfg, accounts: map[string][]string{"opencode": {"~/work.db"}}}
+	rows := map[string][]field{}
+	for _, fl := range f.fields() {
+		if fl.agent >= 0 {
+			rows[f.cfg.Agents[fl.agent].Name] = append(rows[f.cfg.Agents[fl.agent].Name], fl)
+		}
+	}
+	labels := func(fs []field) (l []string) {
+		for _, fl := range fs {
+			l = append(l, fl.label)
+		}
+		return l
+	}
+	if slices.Contains(labels(rows["gm"]), "account") || !slices.Contains(labels(rows["oc"]), "account") {
+		t.Fatalf("account rows: oc %v, gm %v", labels(rows["oc"]), labels(rows["gm"]))
+	}
+	acct := rows["oc"][slices.Index(labels(rows["oc"]), "account")]
+	if !slices.Equal(acct.choices, []string{"", "~/work.db", "~/old.db"}) {
+		t.Errorf("account choices %q, want default, the one found, and the one it has", acct.choices)
+	}
+
+	m := &model{global: cfg, cfg: cfg, lead: &agentState{name: "lead", cfg: cfg.lead()}, setup: f}
+	f.row = slices.IndexFunc(f.fields(), func(fl field) bool { return fl.agent == 0 && fl.label == "cli" })
+	m.setupKey(tea.KeyMsg{Type: tea.KeyRight})
+	if a := f.cfg.Agents[0]; a.CLI != "codex" || a.Data != "" {
+		t.Errorf("after changing the cli: %+v, want codex on its default account", a)
+	}
+	if e := (Config{Lead: Lead{CLI: "claude"}, Agents: []Agent{{Name: "gm", CLI: "agy", Data: "/x"}}}).check(); e == "" {
+		t.Error("an agy agent on another account passed the check")
 	}
 }

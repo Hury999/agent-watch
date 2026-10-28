@@ -1,24 +1,17 @@
 package main
 
-// The models the setup's model picker offers: opencode lists an account's own (with prices and effort
-// variants); Claude has no list command, so its aliases and current ids are listed here.
+// The models the setup's model picker offers, as each CLI lists them (cli.CLI's Models).
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"os/exec"
 	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/n-delic/agent-watch/cli"
 )
 
-type modelInfo struct {
-	ID       string
-	Price    string   // "free", "$in/$out" per million tokens, or a note
-	Variants []string // the model's effort levels
-}
+type modelInfo = cli.Model
 
 // modelList is what's known of one account's models.
 type modelList struct {
@@ -33,80 +26,21 @@ type modelsMsg struct {
 	err     error
 }
 
-var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
-
-// shortcut: a fixed list, since claude has no way to list models; update it when new models come out.
-var claudeModels = []modelInfo{
-	{"sonnet", "latest Sonnet", claudeEfforts}, {"opus", "latest Opus", claudeEfforts},
-	{"haiku", "latest Haiku", claudeEfforts}, {"fable", "latest Fable", claudeEfforts},
-	{"claude-fable-5-1", "", claudeEfforts}, {"claude-opus-5-5", "", claudeEfforts},
-	{"claude-sonnet-5-5", "", claudeEfforts}, {"claude-haiku-5-5", "", claudeEfforts},
-}
-
-// fetchModels asks opencode (or agy) for an account's models, in the background.
+// fetchModels asks an agent's CLI for its account's models, in the background.
 func fetchModels(a Agent) tea.Cmd {
-	if a.CLI == "agy" {
-		return func() tea.Msg {
-			out, err := exec.Command("agy", "models").Output()
-			var list []modelInfo
-			for _, line := range strings.Split(string(out), "\n") {
-				if slug, name, ok := strings.Cut(line, "\t"); ok { // "<slug>\t<name>"
-					list = append(list, modelInfo{ID: slug, Price: name})
-				}
-			}
-			if err == nil && len(list) == 0 {
-				err = fmt.Errorf("agy models listed nothing")
-			}
-			return modelsMsg{accountKey(a), list, err}
-		}
-	}
 	return func() tea.Msg {
-		env, args := account(a)
-		cmd := exec.Command("opencode", append([]string{"api", "model.list"}, args...)...)
-		cmd.Env = append(os.Environ(), env...)
-		out, err := cmd.Output()
-		if err != nil {
-			return modelsMsg{accountKey(a), nil, fmt.Errorf("opencode api model.list: %w", err)}
-		}
-		var r struct {
-			Data []struct {
-				ID, ProviderID string
-				Cost           []struct{ Input, Output float64 }
-				Variants       []struct{ ID string }
-			}
-		}
-		if err := json.Unmarshal(out, &r); err != nil {
-			return modelsMsg{accountKey(a), nil, err}
-		}
-		var list []modelInfo
-		for _, d := range r.Data {
-			mi := modelInfo{ID: d.ProviderID + "/" + d.ID, Price: "free"}
-			if len(d.Cost) > 0 && (d.Cost[0].Input > 0 || d.Cost[0].Output > 0) {
-				mi.Price = fmt.Sprintf("$%g/$%g", d.Cost[0].Input, d.Cost[0].Output)
-			}
-			for _, v := range d.Variants {
-				mi.Variants = append(mi.Variants, v.ID)
-			}
-			list = append(list, mi)
-		}
-		slices.SortFunc(list, func(x, y modelInfo) int { return strings.Compare(x.ID, y.ID) })
-		return modelsMsg{accountKey(a), list, nil}
+		list, err := cliOf(a).Models(expand(a.Data))
+		return modelsMsg{accountKey(a), list, err}
 	}
 }
 
 // listFor is what's known of an agent's models; missing means not fetched yet.
 func (f *setupForm) listFor(a Agent) (modelList, bool) {
-	switch a.CLI {
-	case "claude":
-		return modelList{list: claudeModels}, true
-	case "codex":
-		return modelList{}, true // codex can't list its models: the picker takes what's typed
-	}
 	l, ok := f.known[accountKey(a)]
 	return l, ok
 }
 
-// fetch starts loading an opencode account's models unless they're known or on their way.
+// fetch starts loading an account's models unless they're known or on their way.
 func (f *setupForm) fetch(a Agent) tea.Cmd {
 	if l, ok := f.listFor(a); ok && l.err == nil {
 		return nil // known, or on its way; a failed fetch is tried again
@@ -136,5 +70,5 @@ func (f *setupForm) effortChoices(a Agent) []string {
 			return append([]string{""}, mi.Variants...)
 		}
 	}
-	return cliEfforts[a.CLI]
+	return cliOf(a).Efforts()
 }

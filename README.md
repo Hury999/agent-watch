@@ -74,7 +74,7 @@ An agent is a CLI, an account and a model. A fresh setup has one per installed C
 |---|---|
 | name | what you and the lead call it, e.g. `work` |
 | cli | `claude`, `opencode`, `codex` or `agy` |
-| account | empty for the CLI's default login. Another opencode account: the path of its database (e.g. `~/.local/share/opencode/work.db`, run with `--standalone`). Another Claude account: its config dir (e.g. `~/.claude-work`, as `CLAUDE_CONFIG_DIR`). Another Codex account: its home (`CODEX_HOME`). agy: only its default login for now. |
+| account | `←→` picks a login found on this machine, or the CLI's default. opencode: the other databases next to its own (e.g. `~/.local/share/opencode/work.db`, run with `--standalone`). Claude: config dirs named `~/.claude-<name>` (as `CLAUDE_CONFIG_DIR`). Codex: homes named `~/.codex-<name>` (`CODEX_HOME`). agy has one login, so it has no account row. |
 | model, effort | empty for the CLI's default. Type on a model row to search a list: opencode's own models for that account (with prices and effort levels; `free` finds the free ones), agy's (`agy models`), or Claude's; Codex can't list its models, so type its model name. Effort then offers only that model's levels. |
 | lead may use it | whether the lead can put it to work |
 
