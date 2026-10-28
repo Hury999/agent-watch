@@ -50,6 +50,7 @@ All of these were real bugs. Each has a test or a comment; keep both.
 - **glamour's dark style keeps `##` before headings** and colors inline code red; `markdown` overrides both. The user cares how agent markdown looks.
 - **The lead has no edit tools by default** (`--allowedTools "Bash Read Grep Glob"`, opencode's `plan` agent): its job is to brief and verify, not to fix agents' code. Only the user's **may edit files** setting (`Lead.Edit`) gives them back, along with the small-fixes rule (`editRule`). Keep `--append-system-prompt` right after `--allowedTools`: the tool list takes several values and would swallow a prompt that followed it.
 
+- **The lead does the agents' work if `lead.md` lets it.** Asked to "spin up agents to check" a PR, it read the PR itself and answered before spawning anyone. Its "Delegate, don't do" section counts checking, reviewing and research as agent work. Keep any investigation step limited to what the brief needs.
 - **Slash commands:** every lead turn is a fresh `claude -p` (or `codex exec`, ...), so the CLI's own `/model` or `/clear` would only last that turn. `command` handles those in the app; anything else passes through, and `flushLead` puts it first in the prompt, the only place Claude reads it.
 
 ## Keep compatible
